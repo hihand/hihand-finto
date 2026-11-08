@@ -1,0 +1,504 @@
+import type {
+  Allocation, Category, CategoryTag, Group, GroupMember, Income, MonthNote, Person, Settings, Settlement, Share, ShareType, Tag, Transaction, TransactionTag,
+} from '../db/schema';
+import { inRange, periodRange, shiftMonth } from './period';
+
+/** Toàn bộ dữ liệu đọc một lần từ IndexedDB; mọi con số được tính từ đây (không lưu số suy ra). */
+export interface Snapshot {
+  people: Person[];
+  categories: Category[];
+  tags: Tag[];
+  categoryTags: CategoryTag[];
+  transactions: Transaction[];
+  transactionTags: TransactionTag[];
+  shares: Share[];
+  settlements: Settlement[];
+  allocations: Allocation[];
+  groups?: Group[];
+  groupMembers?: GroupMember[];
+  monthNotes?: MonthNote[];
+  incomes?: Income[];
+  settings?: Settings;
+}
+
+const live = <T extends { deletedAt?: string | null }>(rows: T[]) => rows.filter((r) => !r.deletedAt);
+const push = <K, V>(m: Map<K, V[]>, k: K, v: V) => {
+  const arr = m.get(k);
+  if (arr) arr.push(v);
+  else m.set(k, [v]);
+};
+const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+
+export type DebtStatus = 'paid' | 'partial' | 'open';
+
+export interface Index {
+  snap: Snapshot;
+  /** Tra cứu kể cả bản ghi đã xóa, để giao dịch cũ vẫn hiện đúng tên (BR-14). */
+  person: Map<string, Person>;
+  category: Map<string, Category>;
+  tag: Map<string, Tag>;
+  /** Chỉ bản ghi còn sống. */
+  people: Person[];
+  /** Danh mục chi chính. */
+  roots: Category[];
+  /** Danh mục thu chính. */
+  incomeRoots: Category[];
+  incomes: Income[];
+  childrenOf: Map<string, Category[]>;
+  tagsOfCategory: Map<string, Tag[]>;
+  txs: Transaction[];
+  tx: Map<string, Transaction>;
+  sharesOfTx: Map<string, Share[]>;
+  tagIdsOfTx: Map<string, string[]>;
+  settlements: Settlement[];
+  allocsOfSettlement: Map<string, Allocation[]>;
+  /** Phần bỏ qua (UC-10), còn sống, kèm khoản và giao dịch gốc. */
+  forgiven: { alloc: Allocation; share: Share; tx: Transaction; date: string }[];
+  /** Thu nhập gắn với lần nhận tiền (phần cho luôn, UC-09). */
+  giftsOfSettlement: Map<string, Income[]>;
+  paid: Map<string, number>;
+  credit: Map<string, number>;
+  /** Phần của mỗi khoản Đòi lại đã trả bằng tiền đang giữ (chi hộ / tự trừ), không phải tiền thật của tôi bỏ ra. */
+  heldCover: Map<string, number>;
+  /** Tra cứu nhanh (tránh .find lặp với 10.000 giao dịch — NFR-01). */
+  shareById: Map<string, Share>;
+  settlementById: Map<string, Settlement>;
+  forgivenByShare: Map<string, number>;
+  groups: { group: Group; memberIds: string[] }[];
+  /** Ghi chú tiền dư cuối tháng mới nhất của từng người. */
+  lastNote: Map<string, MonthNote>;
+  startDay: number;
+}
+
+export function makeIndex(snap: Snapshot): Index {
+  const person = new Map(snap.people.map((p) => [p.id, p]));
+  const category = new Map(snap.categories.map((c) => [c.id, c]));
+  const tag = new Map(snap.tags.map((t) => [t.id, t]));
+  const cats = live(snap.categories).sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  const roots = cats.filter((c) => c.parentId === null && c.kind !== 'income');
+  const incomeRoots = cats.filter((c) => c.parentId === null && c.kind === 'income');
+  const incomes = live(snap.incomes ?? []).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  const childrenOf = new Map<string, Category[]>();
+  for (const c of cats) if (c.parentId) push(childrenOf, c.parentId, c);
+
+  const tagsOfCategory = new Map<string, Tag[]>();
+  for (const l of live(snap.categoryTags).sort((a, b) => a.sortOrder - b.sortOrder)) {
+    const t = tag.get(l.tagId);
+    if (t && !t.deletedAt) push(tagsOfCategory, l.categoryId, t);
+  }
+
+  const txs = live(snap.transactions).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  const tx = new Map(txs.map((t) => [t.id, t]));
+  const sharesOfTx = new Map<string, Share[]>();
+  for (const s of live(snap.shares)) if (tx.has(s.transactionId)) push(sharesOfTx, s.transactionId, s);
+  const ORDER = { mine: 0, owe: 1, give: 2 } as const;
+  for (const arr of sharesOfTx.values()) arr.sort((a, b) => ORDER[a.type] - ORDER[b.type] || a.createdAt.localeCompare(b.createdAt));
+  const tagIdsOfTx = new Map<string, string[]>();
+  for (const l of live(snap.transactionTags)) push(tagIdsOfTx, l.transactionId, l.tagId);
+
+  const settlements = live(snap.settlements).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  const allocsOfSettlement = new Map<string, Allocation[]>();
+  const paid = new Map<string, number>();
+  const credit = new Map<string, number>();
+  const shareById = new Map(live(snap.shares).map((x) => [x.id, x]));
+  const stById = new Map(settlements.map((x) => [x.id, x]));
+  const forgiven: Index['forgiven'] = [];
+  const forgivenByShare = new Map<string, number>();
+  const heldCover = new Map<string, number>();
+  for (const s of settlements) credit.set(s.personId, (credit.get(s.personId) ?? 0) + (s.direction === 'out' ? -s.amount : s.amount));
+  for (const a of live(snap.allocations)) {
+    paid.set(a.shareId, (paid.get(a.shareId) ?? 0) + a.amount);
+    if (a.kind !== 'forgive') credit.set(a.personId, (credit.get(a.personId) ?? 0) - a.amount);
+    if (!a.settlementId && a.kind !== 'forgive') heldCover.set(a.shareId, (heldCover.get(a.shareId) ?? 0) + a.amount);
+    if (a.settlementId) push(allocsOfSettlement, a.settlementId, a);
+    if (a.kind === 'forgive') {
+      forgivenByShare.set(a.shareId, (forgivenByShare.get(a.shareId) ?? 0) + a.amount);
+      const sh = shareById.get(a.shareId);
+      const t = sh ? tx.get(sh.transactionId) : undefined;
+      if (sh && t) forgiven.push({ alloc: a, share: sh, tx: t, date: a.date ?? (a.settlementId ? stById.get(a.settlementId)?.date : undefined) ?? a.createdAt.slice(0, 10) });
+    }
+  }
+
+  const members = new Map<string, string[]>();
+  for (const m of live(snap.groupMembers ?? [])) {
+    const p = person.get(m.personId);
+    if (p && !p.deletedAt) push(members, m.groupId, m.personId);
+  }
+  const groups = live(snap.groups ?? []).sort((a, b) => a.name.localeCompare(b.name, 'vi'))
+    .map((group) => ({
+      group,
+      memberIds: (members.get(group.id) ?? []).sort((a, b) => person.get(a)!.name.localeCompare(person.get(b)!.name, 'vi')),
+    }));
+  const lastNote = new Map<string, MonthNote>();
+  for (const n of live(snap.monthNotes ?? [])) {
+    const cur = lastNote.get(n.personId);
+    if (!cur || n.month > cur.month) lastNote.set(n.personId, n);
+  }
+
+  return {
+    snap, person, category, tag, groups, lastNote,
+    people: live(snap.people).sort((a, b) => a.name.localeCompare(b.name, 'vi')),
+    forgiven, heldCover, shareById, settlementById: stById, forgivenByShare, giftsOfSettlement: (() => {
+      const m = new Map<string, Income[]>();
+      for (const r of incomes) if (r.settlementId) push(m, r.settlementId, r);
+      return m;
+    })(),
+    roots, incomeRoots, incomes, childrenOf, tagsOfCategory, txs, tx, sharesOfTx, tagIdsOfTx, settlements, allocsOfSettlement, paid, credit,
+    startDay: snap.settings?.monthStartDay ?? 1,
+  };
+}
+
+export const rootOf = (ix: Index, categoryId: string): Category | undefined => {
+  const c = ix.category.get(categoryId);
+  return c?.parentId ? ix.category.get(c.parentId) : c;
+};
+
+/** Đường dẫn "Mỹ phẩm › Sữa rửa mặt". */
+export function categoryPath(ix: Index, categoryId: string) {
+  const c = ix.category.get(categoryId);
+  if (!c) return '—';
+  const p = c.parentId ? ix.category.get(c.parentId) : undefined;
+  return p ? `${p.name} › ${c.name}` : c.name;
+}
+
+/** RULE-02: phần Của tôi chỉ tính khi danh mục chính bật "Tính vào Chi của tôi". */
+export const countsAsMine = (ix: Index, t: Transaction) => rootOf(ix, t.categoryId)?.countsAsMine ?? true;
+
+export function statusOf(ix: Index, share: Share): DebtStatus {
+  const p = ix.paid.get(share.id) ?? 0;
+  return p >= share.amount ? 'paid' : p > 0 ? 'partial' : 'open';
+}
+
+export const creditOf = (ix: Index, personId: string) => Math.max(0, ix.credit.get(personId) ?? 0);
+
+export interface TxTotals { mine: number; owe: number; give: number }
+export function txTotals(ix: Index, t: Transaction): TxTotals {
+  const out = { mine: 0, owe: 0, give: 0 };
+  for (const s of ix.sharesOfTx.get(t.id) ?? []) out[s.type] += s.amount;
+  return out;
+}
+
+export interface Line { tx: Transaction; amount: number }
+export interface SubGroup { id: string; name: string; amount: number; items: Line[] }
+export interface CatGroup { id: string; name: string; icon: string; amount: number; subs: SubGroup[] }
+export interface PersonGroup { personId: string; amount: number; items: Line[] }
+
+export interface PeriodStats {
+  txs: Transaction[];
+  total: number;
+  mine: number;
+  give: number;
+  owe: number;
+  byCategory: CatGroup[];
+  byTag: { tag: Tag; amount: number }[];
+  giveByPerson: PersonGroup[];
+  oweByPerson: PersonGroup[];
+  /** BR-20..22: thu nhập, tiền được trả lại, dòng tiền ròng = thu nhập + được trả lại − tổng tiền ra (RULE-14). */
+  income: number;
+  received: number;
+  /**
+   * RULE-14: Còn lại = thu nhập − chi tiêu thực của tôi (spent).
+   * Không tính ứng trước (sẽ được trả lại) và chi hộ bằng tiền đang giữ (tiền của người khác).
+   */
+  net: number;
+  /** Chi tiêu thực của tôi = mọi phần Của tôi + Cho đi + phần bỏ qua: tiền mất đi thật. */
+  spent: number;
+  /** Ứng trước trong kỳ = phần Đòi lại chưa có tiền giữ bù (chi vượt tiền giữ, hoặc họ chưa gửi). */
+  advanced: number;
+  /** Tiền trả lại người khác từ tiền đang giữ (UC-13). */
+  returned: number;
+  /** Phần bỏ qua trong kỳ (UC-10) — tính là Cho đi nhưng không phải tiền ra trong kỳ. */
+  forgiven: number;
+  /** Chi hộ người khác trong kỳ (UC-12) — nằm trong Tiền ra và Ứng trước. */
+  onBehalf: number;
+  incomeByCategory: IncomeGroup[];
+}
+
+export interface IncomeLine { income: Income; amount: number }
+export interface IncomeGroup { id: string; name: string; icon: string; amount: number; subs: { id: string; name: string; amount: number; items: IncomeLine[] }[] }
+
+function groupIncomes(ix: Index, list: Income[]): IncomeGroup[] {
+  const m = new Map<string, IncomeGroup>();
+  for (const r of list) {
+    const root = rootOf(ix, r.categoryId);
+    const rootId = root?.id ?? '?';
+    let g = m.get(rootId);
+    if (!g) m.set(rootId, (g = { id: rootId, name: root?.name ?? 'Không rõ', icon: root?.icon ?? 'dots', amount: 0, subs: [] }));
+    g.amount += r.amount;
+    const sub = ix.category.get(r.categoryId);
+    const subId = sub && sub.parentId ? sub.id : rootId;
+    let sg = g.subs.find((x) => x.id === subId);
+    if (!sg) g.subs.push((sg = { id: subId, name: subId === rootId ? 'Chung' : sub!.name, amount: 0, items: [] }));
+    sg.amount += r.amount;
+    sg.items.push({ income: r, amount: r.amount });
+  }
+  const out = [...m.values()].sort((a, b) => b.amount - a.amount);
+  for (const g of out) g.subs.sort((a, b) => b.amount - a.amount);
+  return out;
+}
+
+/** Số liệu một kỳ (BR-10, BR-12). Tổng quan và Thống kê dùng chung hàm này nên luôn khớp nhau. */
+export function periodStats(ix: Index, range: { from: string; to: string }): PeriodStats {
+  const txs = ix.txs.filter((t) => inRange(t.date, range));
+  let total = 0, mine = 0, give = 0, owe = 0, mineAll = 0, advanced = 0;
+  const forgivenOf = ix.forgivenByShare;
+  const cats = new Map<string, CatGroup>();
+  const tags = new Map<string, number>();
+  const giveBy = new Map<string, PersonGroup>();
+  const oweBy = new Map<string, PersonGroup>();
+
+  for (const t of txs) {
+    total += t.totalAmount;
+    const counts = countsAsMine(ix, t);
+    for (const s of ix.sharesOfTx.get(t.id) ?? []) {
+      if (s.type === 'mine') {
+        mineAll += s.amount;
+        if (!counts) continue;
+        mine += s.amount;
+        const root = rootOf(ix, t.categoryId);
+        const rootId = root?.id ?? '?';
+        let g = cats.get(rootId);
+        if (!g) cats.set(rootId, (g = { id: rootId, name: root?.name ?? 'Không rõ', icon: root?.icon ?? 'dots', amount: 0, subs: [] }));
+        g.amount += s.amount;
+        const sub = ix.category.get(t.categoryId);
+        const subId = sub && sub.parentId ? sub.id : rootId;
+        let sg = g.subs.find((x) => x.id === subId);
+        if (!sg) g.subs.push((sg = { id: subId, name: subId === rootId ? 'Chung' : sub!.name, amount: 0, items: [] }));
+        sg.amount += s.amount;
+        sg.items.push({ tx: t, amount: s.amount });
+        for (const tagId of ix.tagIdsOfTx.get(t.id) ?? []) tags.set(tagId, (tags.get(tagId) ?? 0) + s.amount);
+      } else if (s.personId) {
+        const m = s.type === 'give' ? giveBy : oweBy;
+        if (s.type === 'give') give += s.amount;
+        else {
+          owe += s.amount;
+          // phần trả bằng tiền giữ và phần bỏ qua (đã tính vào chi tiêu) không còn là ứng trước
+          advanced += Math.max(0, s.amount - (ix.heldCover.get(s.id) ?? 0) - (forgivenOf.get(s.id) ?? 0));
+        }
+        let g = m.get(s.personId);
+        if (!g) m.set(s.personId, (g = { personId: s.personId, amount: 0, items: [] }));
+        g.amount += s.amount;
+        g.items.push({ tx: t, amount: s.amount });
+      }
+    }
+  }
+
+  const byCategory = [...cats.values()].sort((a, b) => b.amount - a.amount);
+  for (const g of byCategory) g.subs.sort((a, b) => b.amount - a.amount);
+  const incomes = ix.incomes.filter((r) => inRange(r.date, range));
+  const income = incomes.reduce((a, r) => a + r.amount, 0);
+  const sts = ix.settlements.filter((st) => inRange(st.date, range));
+  const received = sts.filter((st) => st.direction !== 'out').reduce((a, st) => a + st.amount, 0);
+  const returned = sts.filter((st) => st.direction === 'out').reduce((a, st) => a + st.amount, 0);
+  let forgivenSum = 0;
+  for (const f of ix.forgiven) {
+    if (!inRange(f.date, range)) continue;
+    forgivenSum += f.alloc.amount;
+    const pid = f.share.personId!;
+    let g = giveBy.get(pid);
+    if (!g) giveBy.set(pid, (g = { personId: pid, amount: 0, items: [] }));
+    g.amount += f.alloc.amount;
+    g.items.push({ tx: f.tx, amount: f.alloc.amount });
+  }
+  const onBehalf = txs.filter((t) => t.onBehalf).reduce((a, t) => a + t.totalAmount, 0);
+  return {
+    income, received, returned, forgiven: forgivenSum, onBehalf,
+    spent: mineAll + give + forgivenSum, advanced,
+    net: income - (mineAll + give + forgivenSum), incomeByCategory: groupIncomes(ix, incomes),
+    txs, total, mine, give, owe, byCategory,
+    byTag: [...tags.entries()].flatMap(([id, amount]) => {
+      const tag = ix.tag.get(id);
+      return tag ? [{ tag, amount }] : [];
+    }).sort((a, b) => b.amount - a.amount),
+    giveByPerson: [...giveBy.values()].sort((a, b) => b.amount - a.amount),
+    oweByPerson: [...oweBy.values()].sort((a, b) => b.amount - a.amount),
+  };
+}
+
+export interface MonthPoint { month: string; total: number; mine: number; give: number; owe: number; income: number; received: number; returned: number; spent: number; advanced: number; net: number }
+
+/** BR-17: 12 kỳ của một năm; trung bình = Chi của tôi cả năm ÷ số tháng đã qua. */
+export function yearStats(ix: Index, year: number, currentMonth: string) {
+  const months: MonthPoint[] = [];
+  for (let i = 0; i < 12; i++) {
+    const month = `${year}-${String(i + 1).padStart(2, '0')}`;
+    const st = periodStats(ix, periodRange(month, ix.startDay));
+    months.push({ month, total: st.total, mine: st.mine, give: st.give, owe: st.owe, income: st.income, received: st.received, returned: st.returned, spent: st.spent, advanced: st.advanced, net: st.net });
+  }
+  const range = { from: periodRange(`${year}-01`, ix.startDay).from, to: periodRange(shiftMonth(`${year}-12`, 1), ix.startDay).from };
+  const all = periodStats(ix, range);
+  const cy = Number(currentMonth.slice(0, 4));
+  const elapsed = year < cy ? 12 : year > cy ? 0 : Number(currentMonth.slice(5, 7));
+  return { months, stats: all, elapsed, average: elapsed ? Math.round(all.mine / elapsed) : 0 };
+}
+
+export interface Debt { share: Share; tx: Transaction; paid: number; remaining: number }
+
+/** Các khoản Đòi lại còn thiếu của một người, cũ nhất trước. */
+export function openDebts(ix: Index, personId: string): Debt[] {
+  const out: Debt[] = [];
+  for (const t of ix.txs) {
+    for (const s of ix.sharesOfTx.get(t.id) ?? []) {
+      if (s.type !== 'owe' || s.personId !== personId) continue;
+      const paid = ix.paid.get(s.id) ?? 0;
+      if (paid < s.amount) out.push({ share: s, tx: t, paid, remaining: s.amount - paid });
+    }
+  }
+  return out.sort((a, b) => a.tx.date.localeCompare(b.tx.date) || a.share.createdAt.localeCompare(b.share.createdAt));
+}
+
+export interface Outstanding { personId: string; amount: number; count: number; oldest: string }
+
+/** Đang đòi lại, theo người (thời điểm hiện tại). */
+export function outstanding(ix: Index): Outstanding[] {
+  const m = new Map<string, Outstanding>();
+  for (const t of ix.txs) {
+    for (const s of ix.sharesOfTx.get(t.id) ?? []) {
+      if (s.type !== 'owe' || !s.personId) continue;
+      const rem = s.amount - (ix.paid.get(s.id) ?? 0);
+      if (rem <= 0) continue;
+      const o = m.get(s.personId) ?? { personId: s.personId, amount: 0, count: 0, oldest: t.date };
+      o.amount += rem;
+      o.count += 1;
+      if (t.date < o.oldest) o.oldest = t.date;
+      m.set(s.personId, o);
+    }
+  }
+  return [...m.values()].sort((a, b) => b.amount - a.amount);
+}
+
+export interface PersonEntry {
+  share: Share; tx: Transaction; status?: DebtStatus; paid: number;
+  /** Số tiền của dòng: phần chia, hoặc phần bỏ qua (forgiven) trong tab Cho đi. */
+  amount: number;
+  /** Phần đã bỏ qua trên khoản này (UC-10). */
+  forgiven: number;
+  /** Dòng Cho đi đến từ việc bỏ qua một khoản Đòi lại. */
+  fromForgive?: boolean;
+}
+export interface PersonSummary { personId: string; total: number; waiting: number; entries: PersonEntry[] }
+
+/** BR-13: Cho đi / Đòi lại của từng người, từ trước tới nay. */
+export function peopleSummary(ix: Index, type: Exclude<ShareType, 'mine'>): PersonSummary[] {
+  const m = new Map<string, PersonSummary>();
+  for (const t of ix.txs) {
+    for (const s of ix.sharesOfTx.get(t.id) ?? []) {
+      if (s.type !== type || !s.personId) continue;
+      const g = m.get(s.personId) ?? { personId: s.personId, total: 0, waiting: 0, entries: [] };
+      const paid = ix.paid.get(s.id) ?? 0;
+      g.total += s.amount;
+      if (type === 'owe') g.waiting += Math.max(0, s.amount - paid);
+      const fg = ix.forgivenByShare.get(s.id) ?? 0;
+      g.entries.push({ share: s, tx: t, paid, amount: s.amount, forgiven: fg, status: type === 'owe' ? statusOf(ix, s) : undefined });
+      m.set(s.personId, g);
+    }
+  }
+  if (type === 'give') {
+    for (const f of ix.forgiven) {
+      const pid = f.share.personId!;
+      const g = m.get(pid) ?? { personId: pid, total: 0, waiting: 0, entries: [] };
+      g.total += f.alloc.amount;
+      g.entries.push({ share: f.share, tx: f.tx, paid: 0, amount: f.alloc.amount, forgiven: f.alloc.amount, fromForgive: true });
+      m.set(pid, g);
+    }
+    for (const g of m.values()) g.entries.sort((a, b) => b.tx.date.localeCompare(a.tx.date));
+  }
+  return [...m.values()].sort((a, b) => b.total - a.total);
+}
+
+/** Tìm giao dịch theo tên, sản phẩm, danh mục, tag, người (không phân biệt dấu). */
+export const fold = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'd').toLowerCase();
+
+export function txMatches(ix: Index, t: Transaction, q: string) {
+  if (!q.trim()) return true;
+  const hay = [
+    t.title, t.productName ?? '', categoryPath(ix, t.categoryId),
+    ...(ix.tagIdsOfTx.get(t.id) ?? []).map((id) => ix.tag.get(id)?.name ?? ''),
+    ...(ix.sharesOfTx.get(t.id) ?? []).map((s) => (s.personId ? ix.person.get(s.personId)?.name ?? '' : '')),
+  ].join(' ');
+  return fold(hay).includes(fold(q.trim()));
+}
+
+export const totalOf = (xs: { amount: number }[]) => sum(xs.map((x) => x.amount));
+
+/**
+ * BR-23 / RULE-15: số dư = số dư ban đầu + mọi dòng tiền có ngày từ ngày bắt đầu tới trước `before`.
+ * Giao dịch trước ngày bắt đầu đã nằm trong số dư ban đầu nên không tính lại. Chưa đặt số dư ban đầu → null.
+ */
+export function balanceAt(ix: Index, before?: string): number | null {
+  const s = ix.snap.settings;
+  if (s?.openingBalance === undefined || !s.openingDate) return null;
+  const from = s.openingDate;
+  const ok = (d: string) => d >= from && (!before || d < before);
+  let b = s.openingBalance;
+  for (const r of ix.incomes) if (ok(r.date)) b += r.amount;
+  for (const st of ix.settlements) if (ok(st.date)) b += st.direction === 'out' ? -st.amount : st.amount;
+  for (const t of ix.txs) if (ok(t.date)) b -= t.totalAmount;
+  return b;
+}
+
+/** Người đã cho bạn tiền (thu nhập có gắn người), từ trước tới nay. */
+export function giftsFromPeople(ix: Index) {
+  const m = new Map<string, { personId: string; total: number; items: Income[] }>();
+  for (const r of ix.incomes) {
+    if (!r.personId) continue;
+    const g = m.get(r.personId) ?? { personId: r.personId, total: 0, items: [] };
+    g.total += r.amount;
+    g.items.push(r);
+    m.set(r.personId, g);
+  }
+  return [...m.values()].sort((a, b) => b.total - a.total);
+}
+
+/** Ngày một khoản trừ bằng tiền thật xảy ra: ngày lần nhận, hoặc ngày giao dịch khi tự trừ vào tiền đang giữ. */
+function allocDate(ix: Index, a: Allocation) {
+  if (a.settlementId) return ix.settlementById.get(a.settlementId)?.date ?? a.createdAt.slice(0, 10);
+  const sh = ix.shareById.get(a.shareId);
+  return (sh && ix.tx.get(sh.transactionId)?.date) ?? a.createdAt.slice(0, 10);
+}
+
+/** Tiền đang giữ của người khác tại một thời điểm (trước ngày `before`); không truyền = hiện tại. */
+export function heldAt(ix: Index, before?: string) {
+  if (!before) return [...ix.credit.values()].reduce((a, v) => a + Math.max(0, v), 0);
+  const per = new Map<string, number>();
+  const add = (id: string, v: number) => per.set(id, (per.get(id) ?? 0) + v);
+  for (const st of ix.settlements) if (st.date < before) add(st.personId, st.direction === 'out' ? -st.amount : st.amount);
+  for (const a of ix.snap.allocations) {
+    if (a.deletedAt || a.kind === 'forgive') continue;
+    if (allocDate(ix, a) < before) add(a.personId, -a.amount);
+  }
+  return [...per.values()].reduce((a, v) => a + Math.max(0, v), 0);
+}
+
+/**
+ * RULE-18: Số dư của tôi = Số dư tài khoản − tiền đang giữ của người khác.
+ * Khoản được cho (thu nhập) là của bạn nên nằm trong số này; tiền đang đòi lại không cộng vào.
+ */
+export function personalBalanceAt(ix: Index, before?: string): number | null {
+  const bank = balanceAt(ix, before);
+  return bank === null ? null : bank - heldAt(ix, before);
+}
+
+export interface HeldEvent { date: string; label: string; delta: number; balance: number; kind: 'in' | 'spend' | 'out' | 'gift' }
+
+/** UC-11..13: sổ giữ hộ của một người — nhận, chi hộ / trừ khoản, trả lại, cho luôn — kèm số còn giữ. */
+export function heldLedger(ix: Index, personId: string): HeldEvent[] {
+  const ev: (Omit<HeldEvent, 'balance'> & { at: string })[] = [];
+  for (const st of ix.settlements) {
+    if (st.personId !== personId) continue;
+    const gift = (ix.giftsOfSettlement.get(st.id) ?? []).reduce((a, r) => a + r.amount, 0);
+    if (st.direction === 'out') ev.push({ date: st.date, at: st.createdAt, label: st.note ? `Trả lại · ${st.note}` : 'Trả lại', delta: -st.amount, kind: 'out' });
+    else ev.push({ date: st.date, at: st.createdAt, label: (st.note ? `Nhận · ${st.note}` : 'Nhận') + (gift ? ` (cho luôn ${gift.toLocaleString('vi-VN')}đ)` : ''), delta: st.amount, kind: 'in' });
+  }
+  for (const a of ix.snap.allocations) {
+    if (a.deletedAt || a.kind === 'forgive' || a.personId !== personId) continue;
+    const sh = ix.shareById.get(a.shareId);
+    const t = sh ? ix.tx.get(sh.transactionId) : undefined;
+    const name = t ? (t.title || t.productName || categoryPath(ix, t.categoryId)) : 'Khoản đã xóa';
+    ev.push({ date: allocDate(ix, a), at: a.createdAt, label: (t?.onBehalf ? 'Chi hộ · ' : 'Trừ khoản · ') + name, delta: -a.amount, kind: 'spend' });
+  }
+  // Theo ngày, cùng ngày thì theo thứ tự ghi.
+  ev.sort((a, b) => a.date.localeCompare(b.date) || a.at.localeCompare(b.at));
+  let bal = 0;
+  return ev.map(({ at: _at, ...e }) => ({ ...e, balance: (bal += e.delta) }));
+}
