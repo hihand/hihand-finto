@@ -21,13 +21,57 @@ async function paidOf(db: FintoDB, shareId: string) {
 }
 
 /**
- * RULE-06: tiền đang giữ = tiền họ đã chuyển − tiền đã trả lại họ − tổng đã trừ bằng tiền thật.
- * Phần bỏ qua (forgive) không đụng tiền đang giữ.
+ * RULE-06: tiền đang giữ = tiền họ đã chuyển − tiền đã trả lại họ − tổng đã trừ bằng tiền thật
+ * + phần trả nợ giữ lại cho họ (repayment 'hold') − phần đã chuyển thành khoản tôi nợ (payable 'fromHeld').
+ * Phần bỏ qua (forgive) và cấn trừ (offset) không đụng tiền đang giữ.
  */
 export async function creditOf(db: FintoDB, personId: string) {
   const sets = (await db.settlements.where('personId').equals(personId).toArray()).filter((s) => !s.deletedAt);
-  const allocs = (await db.allocations.where('personId').equals(personId).toArray()).filter((a) => !a.deletedAt && a.kind !== 'forgive');
-  return sets.reduce((s, x) => s + (x.direction === 'out' ? -x.amount : x.amount), 0) - allocs.reduce((s, x) => s + x.amount, 0);
+  const allocs = (await db.allocations.where('personId').equals(personId).toArray()).filter((a) => !a.deletedAt && touchesHeld(a));
+  const holds = (await db.repayments.where('personId').equals(personId).toArray()).filter((r) => !r.deletedAt && r.mode === 'hold');
+  const moved = (await db.payables.where('personId').equals(personId).toArray()).filter((p) => !p.deletedAt && p.origin === 'fromHeld');
+  return sets.reduce((s, x) => s + (x.direction === 'out' ? -x.amount : x.amount), 0) - allocs.reduce((s, x) => s + x.amount, 0)
+    + holds.reduce((s, x) => s + x.amount, 0) - moved.reduce((s, x) => s + x.amount, 0);
+}
+
+/** Khoản trừ bằng tiền thật / tiền đang giữ (không phải bỏ qua, không phải cấn trừ). */
+export const touchesHeld = (a: Pick<Allocation, 'kind'>) => a.kind !== 'forgive' && a.kind !== 'offset';
+
+/** Các khoản TÔI nợ một người còn lại, cũ nhất trước (đã trừ các lần trả / xóa nợ / cấn trừ). */
+export async function openPayables(db: FintoDB, personId: string) {
+  const pays = (await db.payables.where('personId').equals(personId).toArray()).filter((p) => !p.deletedAt);
+  const reps = (await db.repayments.where('personId').equals(personId).toArray()).filter((r) => !r.deletedAt);
+  const offs = (await db.allocations.where('personId').equals(personId).toArray()).filter((a) => !a.deletedAt && a.kind === 'offset');
+  const used = new Map<string, number>();
+  for (const r of reps) used.set(r.payableId, (used.get(r.payableId) ?? 0) + r.amount);
+  for (const a of offs) if (a.payableId) used.set(a.payableId, (used.get(a.payableId) ?? 0) + a.amount);
+  return pays
+    .map((p) => ({ payable: p, used: used.get(p.id) ?? 0, remaining: p.amount - (used.get(p.id) ?? 0) }))
+    .sort((a, b) => a.payable.date.localeCompare(b.payable.date) || a.payable.createdAt.localeCompare(b.payable.createdAt));
+}
+
+/** Tổng tôi đang nợ một người. */
+export async function owedOf(db: FintoDB, personId: string) {
+  return (await openPayables(db, personId)).reduce((s, p) => s + Math.max(0, p.remaining), 0);
+}
+
+/** Chia một số tiền trả nợ vào các khoản tôi nợ, cũ nhất trước. */
+export async function splitPayables(db: FintoDB, personId: string, amount: number) {
+  const out: { payableId: string; amount: number }[] = [];
+  let left = amount;
+  for (const p of await openPayables(db, personId)) {
+    if (left <= 0) break;
+    const take = Math.min(left, p.remaining);
+    if (take > 0) out.push({ payableId: p.payable.id, amount: take });
+    left -= take;
+  }
+  if (left > 0) throw new Error(`Chỉ đang nợ ${(amount - left).toLocaleString('vi-VN')}đ`);
+  return out;
+}
+
+/** Khoản tôi nợ không được âm (đã trả / cấn trừ nhiều hơn số nợ). */
+export async function assertPayablesOk(db: FintoDB, personId: string) {
+  if ((await openPayables(db, personId)).some((p) => p.remaining < 0)) throw new Error('Số đã trả vượt khoản nợ');
 }
 
 /** Các khoản Đòi lại còn thiếu của một người, cũ nhất trước. */
@@ -58,8 +102,15 @@ export interface ExpenseInput {
   tagIds: string[];
   shares: ShareDraft[];
   applyCredit?: boolean; // RULE-07, mặc định theo cài đặt
-  onBehalf?: boolean; // UC-12: chi hộ, luôn trừ vào tiền đang giữ
+  onBehalf?: boolean; // UC-12: chi hộ, mặc định trừ vào tiền đang giữ
+  /**
+   * Cách xử lý phần Đòi lại của từng người (theo thứ tự): trừ tiền đang giữ → cấn trừ khoản tôi nợ họ
+   * → phần còn lại để họ nợ ('owe', mặc định) hoặc cho luôn ('give' = bỏ qua, thành Cho đi).
+   */
+  perPerson?: Record<string, PersonSettle>;
 }
+
+export interface PersonSettle { credit?: boolean; offset?: boolean; rest?: 'owe' | 'give' }
 
 /** Lưu một khoản chi trong một giao dịch IndexedDB. */
 export async function saveExpense(db: FintoDB, input: ExpenseInput) {
@@ -73,7 +124,7 @@ export async function saveExpense(db: FintoDB, input: ExpenseInput) {
   if (input.kind === 'transfer' && input.shares.some((s) => s.type === 'mine')) throw new Error('Chuyển tiền không có phần Của tôi');
   assertBalanced(input.totalAmount, input.shares);
 
-  return db.transaction('rw', [db.transactions, db.transactionTags, db.shares, db.settlements, db.allocations, db.settings], async () => {
+  return db.transaction('rw', [db.transactions, db.transactionTags, db.shares, db.settlements, db.allocations, db.payables, db.repayments, db.settings], async () => {
     const settings = await db.settings.get('settings');
     const applyCredit = input.onBehalf ? true : input.applyCredit ?? settings?.autoApplyCredit ?? true;
     const tx = { ...base(), date: input.date, kind: input.kind, categoryId: input.categoryId, title: input.title, productName: input.productName, totalAmount: input.totalAmount, splitMode: input.splitMode, ...(input.onBehalf ? { onBehalf: true } : {}) };
@@ -82,12 +133,26 @@ export async function saveExpense(db: FintoDB, input: ExpenseInput) {
     const shares: Share[] = input.shares.map((s) => ({ ...base(), transactionId: tx.id, personId: s.personId, type: s.type, amount: s.amount }));
     await db.shares.bulkAdd(shares);
 
-    if (applyCredit) {
-      for (const sh of shares) {
-        if (sh.type !== 'owe' || !sh.personId) continue;
-        const credit = await creditOf(db, sh.personId);
-        const take = Math.min(credit, sh.amount);
+    for (const sh of shares) {
+      if (sh.type !== 'owe' || !sh.personId) continue;
+      const opt = input.perPerson?.[sh.personId] ?? {};
+      let left = sh.amount;
+      if (opt.credit ?? applyCredit) {
+        const take = Math.min(Math.max(0, await creditOf(db, sh.personId)), left);
         if (take > 0) await db.allocations.add({ ...base(), settlementId: null, shareId: sh.id, personId: sh.personId, amount: take });
+        left -= take;
+      }
+      if ((opt.offset ?? true) && left > 0) {
+        const take = Math.min(await owedOf(db, sh.personId), left);
+        if (take > 0) {
+          for (const part of await splitPayables(db, sh.personId, take)) {
+            await db.allocations.add({ ...base(), settlementId: null, shareId: sh.id, personId: sh.personId, amount: part.amount, kind: 'offset', payableId: part.payableId, date: input.date });
+          }
+          left -= take;
+        }
+      }
+      if (opt.rest === 'give' && left > 0) {
+        await db.allocations.add({ ...base(), settlementId: null, shareId: sh.id, personId: sh.personId, amount: left, kind: 'forgive', date: input.date });
       }
     }
     return tx.id;
@@ -124,7 +189,7 @@ async function giftCategory(db: FintoDB, preferred?: string) {
 export async function settle(db: FintoDB, input: SettleInput) {
   if (!(input.amount > 0)) throw new Error('Số tiền phải lớn hơn 0');
   assertDate(input.date);
-  return db.transaction('rw', [db.settlements, db.allocations, db.shares, db.transactions, db.incomes, db.categories], async () => {
+  return db.transaction('rw', [db.settlements, db.allocations, db.payables, db.repayments, db.shares, db.transactions, db.incomes, db.categories], async () => {
     const credit = Math.max(0, await creditOf(db, input.personId));
     const picks: { shareId: string; amount: number; date: string }[] = [];
     for (const p of input.picks) {
@@ -187,7 +252,7 @@ export async function depositCredit(db: FintoDB, input: { personId: string; date
 /** UC-10 (không kèm lần nhận): bạn bỏ qua một phần hoặc cả khoản Đòi lại; phần đó thành Cho đi. */
 export async function forgiveShare(db: FintoDB, shareId: string, amount: number, date: string) {
   assertDate(date);
-  return db.transaction('rw', [db.shares, db.allocations], async () => {
+  return db.transaction('rw', [db.shares, db.allocations, db.payables, db.repayments], async () => {
     const sh = await db.shares.get(shareId);
     if (!sh || sh.deletedAt || sh.type !== 'owe' || !sh.personId) throw new Error('Khoản không hợp lệ');
     if (amount <= 0 || amount > sh.amount - (await paidOf(db, sh.id))) throw new Error('Số bỏ qua vượt số còn thiếu');
@@ -199,7 +264,7 @@ export async function forgiveShare(db: FintoDB, shareId: string, amount: number,
 export async function returnCredit(db: FintoDB, personId: string, amount: number, date: string, note?: string) {
   if (!(amount > 0)) throw new Error('Số tiền phải lớn hơn 0');
   assertDate(date);
-  return db.transaction('rw', [db.settlements, db.allocations], async () => {
+  return db.transaction('rw', [db.settlements, db.allocations, db.payables, db.repayments], async () => {
     const credit = await creditOf(db, personId);
     if (amount > credit) throw new Error(`Chỉ đang giữ ${credit.toLocaleString('vi-VN')}đ`);
     const st = { ...base(), personId, date, amount, note, direction: 'out' as const };
@@ -214,7 +279,7 @@ export async function returnCredit(db: FintoDB, personId: string, amount: number
  */
 export async function giftFromCredit(db: FintoDB, personId: string, amount: number, categoryId?: string) {
   if (amount <= 0) throw new Error('Số tiền phải lớn hơn 0');
-  return db.transaction('rw', [db.settlements, db.allocations, db.incomes, db.categories], async () => {
+  return db.transaction('rw', [db.settlements, db.allocations, db.payables, db.repayments, db.incomes, db.categories], async () => {
     const credit = await creditOf(db, personId);
     if (amount > credit) throw new Error(`Chỉ đang giữ ${credit.toLocaleString('vi-VN')}đ`);
     const cat = await giftCategory(db, categoryId);
@@ -239,7 +304,7 @@ export async function giftFromCredit(db: FintoDB, personId: string, amount: numb
 /** Trừ các khoản Đòi lại cũ vào tiền đang giữ (không có tiền mới chuyển tới). */
 export async function applyCreditTo(db: FintoDB, personId: string, picks: { shareId: string; amount: number }[]) {
   if (picks.length === 0) throw new Error('Chưa chọn khoản nào');
-  return db.transaction('rw', [db.settlements, db.allocations, db.shares, db.transactions], async () => {
+  return db.transaction('rw', [db.settlements, db.allocations, db.payables, db.repayments, db.shares, db.transactions], async () => {
     const credit = await creditOf(db, personId);
     const total = picks.reduce((s, p) => s + p.amount, 0);
     if (total > credit) throw new Error('Tổng khoản trừ vượt tiền đang giữ');
@@ -270,7 +335,7 @@ async function fixNegativeCredit(db: FintoDB, personId: string) {
   let credit = await creditOf(db, personId);
   if (credit >= 0) return;
   const autos = (await db.allocations.where('personId').equals(personId).toArray())
-    .filter((a) => !a.deletedAt && a.settlementId === null && a.kind !== 'forgive')
+    .filter((a) => !a.deletedAt && a.settlementId === null && touchesHeld(a))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   for (const a of autos) {
     if (credit >= 0) break;
@@ -279,9 +344,25 @@ async function fixNegativeCredit(db: FintoDB, personId: string) {
   }
 }
 
+/** Gỡ cấn trừ (mới nhất trước) khi khoản tôi nợ đã bị trả bằng cách khác trong lúc chờ hoàn tác. */
+async function fixOverOffset(db: FintoDB, personId: string) {
+  for (const p of await openPayables(db, personId)) {
+    let over = -p.remaining;
+    if (over <= 0) continue;
+    const offs = (await db.allocations.where('personId').equals(personId).toArray())
+      .filter((a) => !a.deletedAt && a.kind === 'offset' && a.payableId === p.payable.id)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    for (const a of offs) {
+      if (over <= 0) break;
+      await db.allocations.update(a.id, { deletedAt: now(), updatedAt: now() });
+      over -= a.amount;
+    }
+  }
+}
+
 /** RULE-13: xóa một lần nhận (kèm phần cho luôn, phần bỏ qua của nó) hoặc một lần trả lại tiền giữ. */
 export async function deleteSettlement(db: FintoDB, settlementId: string) {
-  return db.transaction('rw', [db.settlements, db.allocations, db.incomes], async () => {
+  return db.transaction('rw', [db.settlements, db.allocations, db.payables, db.repayments, db.incomes], async () => {
     const st = await db.settlements.get(settlementId);
     if (!st || st.deletedAt) return;
     const t = now();
@@ -302,7 +383,7 @@ export async function deleteSettlement(db: FintoDB, settlementId: string) {
  * Trả về dấu thời gian xóa để hoàn tác (BR-11).
  */
 export async function deleteTransaction(db: FintoDB, txId: string) {
-  return db.transaction('rw', [db.transactions, db.shares, db.allocations], async () => {
+  return db.transaction('rw', [db.transactions, db.shares, db.allocations, db.payables, db.repayments], async () => {
     const t = now();
     await db.transactions.update(txId, { deletedAt: t, updatedAt: t });
     const shares = await db.shares.where('transactionId').equals(txId).toArray();
@@ -318,7 +399,7 @@ export async function deleteTransaction(db: FintoDB, txId: string) {
 
 /** Hoàn tác xóa: khôi phục đúng các bản ghi bị xóa cùng lúc; tiền đang giữ vẫn không âm (RULE-06). */
 export async function restoreTransaction(db: FintoDB, txId: string, stamp: string) {
-  return db.transaction('rw', [db.transactions, db.shares, db.allocations, db.settlements], async () => {
+  return db.transaction('rw', [db.transactions, db.shares, db.allocations, db.payables, db.repayments, db.settlements], async () => {
     const tx = await db.transactions.get(txId);
     if (!tx || tx.deletedAt !== stamp) return;
     const t = now();
@@ -335,7 +416,10 @@ export async function restoreTransaction(db: FintoDB, txId: string, stamp: strin
         persons.add(a.personId);
       }
     }
-    for (const p of persons) await fixNegativeCredit(db, p);
+    for (const p of persons) {
+      await fixNegativeCredit(db, p);
+      await fixOverOffset(db, p);
+    }
   });
 }
 

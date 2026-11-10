@@ -59,6 +59,8 @@ export interface Transaction extends Base {
   onBehalf?: boolean;
   totalAmount: number; // đồng, số nguyên
   splitMode: SplitMode;
+  /** Số "Họ đang nợ tôi" nhập lúc bắt đầu dùng app: không phải tiền ra, không vào thống kê kỳ. */
+  opening?: boolean;
 }
 
 export interface TransactionTag extends Base {
@@ -80,6 +82,8 @@ export interface Settlement extends Base {
   note?: string;
   /** 'in' (mặc định) = người đó chuyển cho bạn; 'out' = bạn trả lại tiền đang giữ của họ (UC-13). */
   direction?: 'in' | 'out';
+  /** Số đang giữ nhập lúc bắt đầu dùng app: đã nằm trong số dư ban đầu, không phải tiền vào. */
+  opening?: boolean;
 }
 
 export interface Allocation extends Base {
@@ -87,10 +91,47 @@ export interface Allocation extends Base {
   shareId: string;
   personId: string;
   amount: number;
-  /** 'pay' (mặc định) = trừ bằng tiền thật; 'forgive' = bạn bỏ qua, phần đó thành Cho đi (UC-10). Không đụng tiền đang giữ. */
-  kind?: 'pay' | 'forgive';
-  /** Ngày bỏ qua (chỉ với kind 'forgive'). */
+  /** 'pay' (mặc định) = trừ bằng tiền thật; 'forgive' = bạn bỏ qua, phần đó thành Cho đi (UC-10); 'offset' = cấn trừ với khoản tôi nợ người đó. Hai loại sau không đụng tiền đang giữ. */
+  kind?: 'pay' | 'forgive' | 'offset';
+  /** Ngày bỏ qua / cấn trừ (với kind 'forgive' | 'offset'). */
   date?: string;
+  /** Chỉ với kind 'offset': khoản tôi nợ được cấn trừ. */
+  payableId?: string;
+}
+
+/**
+ * Khoản TÔI nợ một người.
+ * - 'opening': nợ từ trước khi dùng app (ngoài sổ: không trừ vào Số dư của tôi; trả thì tính là tiền ra).
+ * - 'borrow': vay mới, tiền vào tài khoản (trong sổ).
+ * - 'fromHeld': chuyển một phần tiền đang giữ thành khoản nợ vì đã tiêu mất (trong sổ).
+ */
+export type PayableOrigin = 'opening' | 'borrow' | 'fromHeld';
+export interface Payable extends Base {
+  personId: string;
+  date: string;
+  amount: number;
+  origin: PayableOrigin;
+  note?: string;
+}
+
+/**
+ * Một lần giảm khoản tôi nợ (gắn với đúng một khoản nợ).
+ * - 'hold': trả bằng cách giữ lại trong tài khoản cho người đó (thành tiền đang giữ).
+ * - 'transfer': chuyển khoản trả thẳng.
+ * - 'waive': người đó xóa nợ cho tôi (không có tiền đi đâu).
+ */
+export type RepayMode = 'hold' | 'transfer' | 'waive';
+export interface Repayment extends Base {
+  personId: string;
+  payableId: string;
+  date: string;
+  amount: number;
+  mode: RepayMode;
+  /** Trả nợ từ một khoản thu nhập: xóa thu nhập thì xóa theo. */
+  incomeId?: string | null;
+  note?: string;
+  /** Các dòng ghi cùng một lần trả (một lần trả chia vào nhiều khoản nợ) có chung batch → hiện là 1 giao dịch. */
+  batch?: string;
 }
 
 /** Một khoản thu nhập: lương, thưởng, được cho… (khác tiền người khác trả lại = settlements). */
@@ -128,6 +169,8 @@ export interface Settings {
   incomeSeeded?: boolean;
   /** Đã tạo danh mục Hóa đơn mặc định (cho dữ liệu cũ). */
   billsSeeded?: boolean;
+  /** Đã tạo "Chuyển tiền › Thanh toán hộ" (cho dữ liệu cũ). */
+  payForSeeded?: boolean;
   /** Ẩn số nhạy cảm (thu nhập, số dư, còn lại) mỗi lần mở app; không có = true. */
   hideOnOpen?: boolean;
 }
@@ -146,6 +189,8 @@ export class FintoDB extends Dexie {
   allocations!: EntityTable<Allocation, 'id'>;
   monthNotes!: EntityTable<MonthNote, 'id'>;
   incomes!: EntityTable<Income, 'id'>;
+  payables!: EntityTable<Payable, 'id'>;
+  repayments!: EntityTable<Repayment, 'id'>;
   settings!: EntityTable<Settings, 'id'>;
 
   constructor(name = 'hihand-finto') {
@@ -168,6 +213,11 @@ export class FintoDB extends Dexie {
     // v2: thu nhập. Bảng cũ giữ nguyên; danh mục thu được tạo bằng seedIncomeCategories.
     this.version(2).stores({
       incomes: 'id, date, categoryId, personId, updatedAt',
+    });
+    // v3: công nợ hai chiều (khoản tôi nợ + các lần trả / xóa nợ).
+    this.version(3).stores({
+      payables: 'id, personId, date, updatedAt',
+      repayments: 'id, personId, payableId, incomeId, date, updatedAt',
     });
   }
 }

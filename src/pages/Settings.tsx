@@ -15,7 +15,7 @@ const ExportDialog = lazy(() => import('../ui/ExportDialog'));
 import { fmtDate, today } from '../domain/period';
 import { setOpeningBalance } from '../domain/income';
 import { parseAmount } from '../domain/split';
-import { balanceAt } from '../domain/stats';
+import { balanceAt, debtSummary } from '../domain/stats';
 import { money, useMask } from '../ui/format';
 import { useSearchParams } from 'react-router-dom';
 
@@ -159,6 +159,13 @@ function PeopleSettings({ ix }: { ix: Index }) {
   const [showArchived, setShowArchived] = useState(false);
   const list = ix.people.filter((p) => showArchived || !p.archived);
   const set = (p: Person, patch: Parameters<typeof updatePerson>[2]) => run(() => updatePerson(db, p.id, patch));
+  const debtOf = new Map(debtSummary(ix).map((d) => [d.personId, d]));
+  /** Ẩn người còn công nợ: hỏi lại trước (khoản nợ vẫn còn, chỉ ẩn khỏi danh sách chọn). */
+  const archive = (p: Person) => {
+    const d = debtOf.get(p.id);
+    if (!p.archived && d && !window.confirm(`${p.name} vẫn còn công nợ${d.iOwe ? ` · bạn nợ ${money(d.iOwe)}` : ''}${d.theyOwe ? ` · nợ bạn ${money(d.theyOwe)}` : ''}. Vẫn ẩn?`)) return;
+    set(p, { archived: !p.archived });
+  };
   return (
     <div className="cols">
       <section className="card stack col-main">
@@ -174,7 +181,7 @@ function PeopleSettings({ ix }: { ix: Index }) {
                 <button type="button" className="give" aria-pressed={p.defaultType === 'give'} onClick={() => set(p, { defaultType: 'give' })}>Cho</button>
               </span>
               <InlineName label={`Tên mới cho ${p.name}`} value={p.name} onSave={(v) => set(p, { name: v })} />
-              <button type="button" className="btn sm" onClick={() => set(p, { archived: !p.archived })}>{p.archived ? 'Hiện lại' : 'Ẩn'}</button>
+              <button type="button" className="btn sm" onClick={() => archive(p)}>{p.archived ? 'Hiện lại' : 'Ẩn'}</button>
             </div>
           ))}
         </div>

@@ -1,5 +1,5 @@
 import type {
-  Allocation, Category, CategoryTag, Group, GroupMember, Income, MonthNote, Person, Settings, Settlement, Share, ShareType, Tag, Transaction, TransactionTag,
+  Allocation, Category, CategoryTag, Group, GroupMember, Income, MonthNote, Payable, Person, Repayment, Settings, Settlement, Share, ShareType, Tag, Transaction, TransactionTag,
 } from '../db/schema';
 import { inRange, periodRange, shiftMonth } from './period';
 
@@ -18,6 +18,8 @@ export interface Snapshot {
   groupMembers?: GroupMember[];
   monthNotes?: MonthNote[];
   incomes?: Income[];
+  payables?: Payable[];
+  repayments?: Repayment[];
   settings?: Settings;
 }
 
@@ -46,7 +48,10 @@ export interface Index {
   incomes: Income[];
   childrenOf: Map<string, Category[]>;
   tagsOfCategory: Map<string, Tag[]>;
+  /** Giao dịch thật (không gồm số đầu kỳ) — dùng cho thống kê, danh sách, số dư. */
   txs: Transaction[];
+  /** Kể cả giao dịch số đầu kỳ "Họ đang nợ tôi" — dùng cho công nợ. */
+  allTxs: Transaction[];
   tx: Map<string, Transaction>;
   sharesOfTx: Map<string, Share[]>;
   tagIdsOfTx: Map<string, string[]>;
@@ -60,6 +65,16 @@ export interface Index {
   credit: Map<string, number>;
   /** Phần của mỗi khoản Đòi lại đã trả bằng tiền đang giữ (chi hộ / tự trừ), không phải tiền thật của tôi bỏ ra. */
   heldCover: Map<string, number>;
+  /** Phần của mỗi khoản Đòi lại đã cấn trừ với khoản tôi nợ người đó. */
+  offsetCover: Map<string, number>;
+  /** Khoản tôi nợ (còn sống), cũ nhất trước. */
+  payables: Payable[];
+  payableById: Map<string, Payable>;
+  /** Đã trả / xóa nợ / cấn trừ trên mỗi khoản tôi nợ. */
+  payableUsed: Map<string, number>;
+  repayments: Repayment[];
+  /** Các dòng cấn trừ (còn sống). */
+  offsets: Allocation[];
   /** Tra cứu nhanh (tránh .find lặp với 10.000 giao dịch — NFR-01). */
   shareById: Map<string, Share>;
   settlementById: Map<string, Settlement>;
@@ -87,8 +102,9 @@ export function makeIndex(snap: Snapshot): Index {
     if (t && !t.deletedAt) push(tagsOfCategory, l.categoryId, t);
   }
 
-  const txs = live(snap.transactions).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
-  const tx = new Map(txs.map((t) => [t.id, t]));
+  const allTxs = live(snap.transactions).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  const txs = allTxs.filter((t) => !t.opening);
+  const tx = new Map(allTxs.map((t) => [t.id, t]));
   const sharesOfTx = new Map<string, Share[]>();
   for (const s of live(snap.shares)) if (tx.has(s.transactionId)) push(sharesOfTx, s.transactionId, s);
   const ORDER = { mine: 0, owe: 1, give: 2 } as const;
@@ -105,9 +121,28 @@ export function makeIndex(snap: Snapshot): Index {
   const forgiven: Index['forgiven'] = [];
   const forgivenByShare = new Map<string, number>();
   const heldCover = new Map<string, number>();
-  for (const s of settlements) credit.set(s.personId, (credit.get(s.personId) ?? 0) + (s.direction === 'out' ? -s.amount : s.amount));
+  const offsetCover = new Map<string, number>();
+  const offsets: Allocation[] = [];
+  const payables = live(snap.payables ?? []).sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
+  const payableById = new Map(payables.map((p) => [p.id, p]));
+  const repayments = live(snap.repayments ?? []).filter((r) => payableById.has(r.payableId))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  const payableUsed = new Map<string, number>();
+  const addCredit = (id: string, v: number) => credit.set(id, (credit.get(id) ?? 0) + v);
+  for (const s of settlements) addCredit(s.personId, s.direction === 'out' ? -s.amount : s.amount);
+  for (const r of repayments) {
+    payableUsed.set(r.payableId, (payableUsed.get(r.payableId) ?? 0) + r.amount);
+    if (r.mode === 'hold') addCredit(r.personId, r.amount);
+  }
+  for (const p of payables) if (p.origin === 'fromHeld') addCredit(p.personId, -p.amount);
   for (const a of live(snap.allocations)) {
     paid.set(a.shareId, (paid.get(a.shareId) ?? 0) + a.amount);
+    if (a.kind === 'offset') {
+      offsets.push(a);
+      offsetCover.set(a.shareId, (offsetCover.get(a.shareId) ?? 0) + a.amount);
+      if (a.payableId) payableUsed.set(a.payableId, (payableUsed.get(a.payableId) ?? 0) + a.amount);
+      continue;
+    }
     if (a.kind !== 'forgive') credit.set(a.personId, (credit.get(a.personId) ?? 0) - a.amount);
     if (!a.settlementId && a.kind !== 'forgive') heldCover.set(a.shareId, (heldCover.get(a.shareId) ?? 0) + a.amount);
     if (a.settlementId) push(allocsOfSettlement, a.settlementId, a);
@@ -138,7 +173,7 @@ export function makeIndex(snap: Snapshot): Index {
   return {
     snap, person, category, tag, groups, lastNote,
     people: live(snap.people).sort((a, b) => a.name.localeCompare(b.name, 'vi')),
-    forgiven, heldCover, shareById, settlementById: stById, forgivenByShare, giftsOfSettlement: (() => {
+    forgiven, heldCover, offsetCover, payables, payableById, payableUsed, repayments, offsets, allTxs, shareById, settlementById: stById, forgivenByShare, giftsOfSettlement: (() => {
       const m = new Map<string, Income[]>();
       for (const r of incomes) if (r.settlementId) push(m, r.settlementId, r);
       return m;
@@ -163,6 +198,12 @@ export function categoryPath(ix: Index, categoryId: string) {
 
 /** RULE-02: phần Của tôi chỉ tính khi danh mục chính bật "Tính vào Chi của tôi". */
 export const countsAsMine = (ix: Index, t: Transaction) => rootOf(ix, t.categoryId)?.countsAsMine ?? true;
+
+/**
+ * Phần Đòi lại thật của một khoản: phần đã cấn trừ với khoản tôi nợ người đó là TRẢ NỢ (của tôi trả họ),
+ * không phải họ nợ tôi, nên không tính là Đòi lại.
+ */
+export const oweAmount = (ix: Index, share: Share) => Math.max(0, share.amount - (ix.offsetCover.get(share.id) ?? 0));
 
 export function statusOf(ix: Index, share: Share): DebtStatus {
   const p = ix.paid.get(share.id) ?? 0;
@@ -212,6 +253,19 @@ export interface PeriodStats {
   /** Chi hộ người khác trong kỳ (UC-12) — nằm trong Tiền ra và Ứng trước. */
   onBehalf: number;
   incomeByCategory: IncomeGroup[];
+  /**
+   * Trả nợ trong kỳ (giữ lại + chuyển khoản + cấn trừ). Chỉ phần trả khoản nợ ĐẦU KỲ (repaidOld) trừ vào "Còn lại";
+   * khoản nợ phát sinh trong app thì tiền tiêu đã tính lúc chi nên không trừ lần nữa.
+   */
+  repaid: number;
+  repaidOld: number;
+  /** Được xóa nợ trong kỳ; phần nợ phát sinh trong app (waivedNew) tính như được cho (cộng vào "Còn lại"). */
+  waived: number;
+  waivedNew: number;
+  /** Bỏ qua khoản "Họ đang nợ tôi" đầu kỳ: vẫn là Cho đi nhưng không vào chi tiêu kỳ. */
+  forgivenOld: number;
+  /** Vay mới trong kỳ (tiền vào, không phải thu nhập). */
+  borrowed: number;
 }
 
 export interface IncomeLine { income: Income; amount: number }
@@ -271,14 +325,18 @@ export function periodStats(ix: Index, range: { from: string; to: string }): Per
         const m = s.type === 'give' ? giveBy : oweBy;
         if (s.type === 'give') give += s.amount;
         else {
-          owe += s.amount;
-          // phần trả bằng tiền giữ và phần bỏ qua (đã tính vào chi tiêu) không còn là ứng trước
-          advanced += Math.max(0, s.amount - (ix.heldCover.get(s.id) ?? 0) - (forgivenOf.get(s.id) ?? 0));
+          // Phần cấn trừ là trả nợ (dòng "Trả nợ"), không phải Đòi lại.
+          const real = oweAmount(ix, s);
+          owe += real;
+          if (real <= 0) continue;
+          // phần trả bằng tiền giữ, phần cấn trừ (tính là trả nợ) và phần bỏ qua (đã tính vào chi tiêu) không còn là ứng trước
+          advanced += Math.max(0, s.amount - (ix.heldCover.get(s.id) ?? 0) - (ix.offsetCover.get(s.id) ?? 0) - (forgivenOf.get(s.id) ?? 0));
         }
+        const amt = s.type === 'owe' ? oweAmount(ix, s) : s.amount;
         let g = m.get(s.personId);
         if (!g) m.set(s.personId, (g = { personId: s.personId, amount: 0, items: [] }));
-        g.amount += s.amount;
-        g.items.push({ tx: t, amount: s.amount });
+        g.amount += amt;
+        g.items.push({ tx: t, amount: amt });
       }
     }
   }
@@ -288,11 +346,12 @@ export function periodStats(ix: Index, range: { from: string; to: string }): Per
   const incomes = ix.incomes.filter((r) => inRange(r.date, range));
   const income = incomes.reduce((a, r) => a + r.amount, 0);
   const sts = ix.settlements.filter((st) => inRange(st.date, range));
-  const received = sts.filter((st) => st.direction !== 'out').reduce((a, st) => a + st.amount, 0);
+  const received = sts.filter((st) => st.direction !== 'out' && !st.opening).reduce((a, st) => a + st.amount, 0);
   const returned = sts.filter((st) => st.direction === 'out').reduce((a, st) => a + st.amount, 0);
-  let forgivenSum = 0;
+  let forgivenSum = 0, forgivenOld = 0;
   for (const f of ix.forgiven) {
     if (!inRange(f.date, range)) continue;
+    if (f.tx.opening) { forgivenOld += f.alloc.amount; continue; }
     forgivenSum += f.alloc.amount;
     const pid = f.share.personId!;
     let g = giveBy.get(pid);
@@ -301,10 +360,11 @@ export function periodStats(ix: Index, range: { from: string; to: string }): Per
     g.items.push({ tx: f.tx, amount: f.alloc.amount });
   }
   const onBehalf = txs.filter((t) => t.onBehalf).reduce((a, t) => a + t.totalAmount, 0);
+  const d = debtFlows(ix, range);
   return {
-    income, received, returned, forgiven: forgivenSum, onBehalf,
+    income, received, returned, forgiven: forgivenSum, onBehalf, forgivenOld, ...d,
     spent: mineAll + give + forgivenSum, advanced,
-    net: income - (mineAll + give + forgivenSum), incomeByCategory: groupIncomes(ix, incomes),
+    net: income + d.waivedNew - (mineAll + give + forgivenSum) - d.repaidOld, incomeByCategory: groupIncomes(ix, incomes),
     txs, total, mine, give, owe, byCategory,
     byTag: [...tags.entries()].flatMap(([id, amount]) => {
       const tag = ix.tag.get(id);
@@ -315,7 +375,33 @@ export function periodStats(ix: Index, range: { from: string; to: string }): Per
   };
 }
 
-export interface MonthPoint { month: string; total: number; mine: number; give: number; owe: number; income: number; received: number; returned: number; spent: number; advanced: number; net: number }
+export interface MonthPoint { month: string; total: number; mine: number; give: number; owe: number; income: number; received: number; returned: number; spent: number; advanced: number; net: number; repaid: number }
+
+/** Ngày của một dòng cấn trừ: ngày ghi, không có thì ngày giao dịch. */
+const offsetDate = (ix: Index, a: Allocation) => a.date ?? (ix.tx.get(ix.shareById.get(a.shareId)?.transactionId ?? '')?.date) ?? a.createdAt.slice(0, 10);
+
+/** Dòng công nợ trong một khoảng ngày (xem PeriodStats). */
+function debtFlows(ix: Index, range: { from: string; to: string }) {
+  let repaid = 0, repaidOld = 0, waived = 0, waivedNew = 0, borrowed = 0;
+  const old = (payableId?: string) => ix.payableById.get(payableId ?? '')?.origin === 'opening';
+  for (const r of ix.repayments) {
+    if (!inRange(r.date, range)) continue;
+    if (r.mode === 'waive') {
+      waived += r.amount;
+      if (!old(r.payableId)) waivedNew += r.amount;
+    } else {
+      repaid += r.amount;
+      if (old(r.payableId)) repaidOld += r.amount;
+    }
+  }
+  for (const a of ix.offsets) {
+    if (!inRange(offsetDate(ix, a), range)) continue;
+    repaid += a.amount;
+    if (old(a.payableId)) repaidOld += a.amount;
+  }
+  for (const p of ix.payables) if (p.origin === 'borrow' && inRange(p.date, range)) borrowed += p.amount;
+  return { repaid, repaidOld, waived, waivedNew, borrowed };
+}
 
 /** BR-17: 12 kỳ của một năm; trung bình = Chi của tôi cả năm ÷ số tháng đã qua. */
 export function yearStats(ix: Index, year: number, currentMonth: string) {
@@ -323,7 +409,7 @@ export function yearStats(ix: Index, year: number, currentMonth: string) {
   for (let i = 0; i < 12; i++) {
     const month = `${year}-${String(i + 1).padStart(2, '0')}`;
     const st = periodStats(ix, periodRange(month, ix.startDay));
-    months.push({ month, total: st.total, mine: st.mine, give: st.give, owe: st.owe, income: st.income, received: st.received, returned: st.returned, spent: st.spent, advanced: st.advanced, net: st.net });
+    months.push({ month, total: st.total, mine: st.mine, give: st.give, owe: st.owe, income: st.income, received: st.received, returned: st.returned, spent: st.spent, advanced: st.advanced, net: st.net, repaid: st.repaid });
   }
   const range = { from: periodRange(`${year}-01`, ix.startDay).from, to: periodRange(shiftMonth(`${year}-12`, 1), ix.startDay).from };
   const all = periodStats(ix, range);
@@ -337,7 +423,7 @@ export interface Debt { share: Share; tx: Transaction; paid: number; remaining: 
 /** Các khoản Đòi lại còn thiếu của một người, cũ nhất trước. */
 export function openDebts(ix: Index, personId: string): Debt[] {
   const out: Debt[] = [];
-  for (const t of ix.txs) {
+  for (const t of ix.allTxs) {
     for (const s of ix.sharesOfTx.get(t.id) ?? []) {
       if (s.type !== 'owe' || s.personId !== personId) continue;
       const paid = ix.paid.get(s.id) ?? 0;
@@ -352,7 +438,7 @@ export interface Outstanding { personId: string; amount: number; count: number; 
 /** Đang đòi lại, theo người (thời điểm hiện tại). */
 export function outstanding(ix: Index): Outstanding[] {
   const m = new Map<string, Outstanding>();
-  for (const t of ix.txs) {
+  for (const t of ix.allTxs) {
     for (const s of ix.sharesOfTx.get(t.id) ?? []) {
       if (s.type !== 'owe' || !s.personId) continue;
       const rem = s.amount - (ix.paid.get(s.id) ?? 0);
@@ -375,21 +461,28 @@ export interface PersonEntry {
   forgiven: number;
   /** Dòng Cho đi đến từ việc bỏ qua một khoản Đòi lại. */
   fromForgive?: boolean;
+  /** Phần đã cấn trừ (trả nợ) — đã bỏ ra khỏi amount của dòng Đòi lại. */
+  offset?: number;
 }
 export interface PersonSummary { personId: string; total: number; waiting: number; entries: PersonEntry[] }
 
 /** BR-13: Cho đi / Đòi lại của từng người, từ trước tới nay. */
 export function peopleSummary(ix: Index, type: Exclude<ShareType, 'mine'>): PersonSummary[] {
   const m = new Map<string, PersonSummary>();
-  for (const t of ix.txs) {
+  for (const t of ix.allTxs) {
     for (const s of ix.sharesOfTx.get(t.id) ?? []) {
       if (s.type !== type || !s.personId) continue;
+      // Đòi lại: bỏ phần cấn trừ (đó là trả nợ); cấn trừ hết thì khoản này không còn là Đòi lại.
+      const off = type === 'owe' ? ix.offsetCover.get(s.id) ?? 0 : 0;
+      const amount = s.amount - off;
+      if (amount <= 0) continue;
       const g = m.get(s.personId) ?? { personId: s.personId, total: 0, waiting: 0, entries: [] };
-      const paid = ix.paid.get(s.id) ?? 0;
-      g.total += s.amount;
-      if (type === 'owe') g.waiting += Math.max(0, s.amount - paid);
+      const paid = Math.max(0, (ix.paid.get(s.id) ?? 0) - off);
+      g.total += amount;
+      if (type === 'owe') g.waiting += Math.max(0, amount - paid);
       const fg = ix.forgivenByShare.get(s.id) ?? 0;
-      g.entries.push({ share: s, tx: t, paid, amount: s.amount, forgiven: fg, status: type === 'owe' ? statusOf(ix, s) : undefined });
+      const status = type === 'owe' ? (paid >= amount ? 'paid' : paid > 0 ? 'partial' : 'open') : undefined;
+      g.entries.push({ share: s, tx: t, paid, amount, forgiven: fg, status, offset: off || undefined });
       m.set(s.personId, g);
     }
   }
@@ -432,8 +525,10 @@ export function balanceAt(ix: Index, before?: string): number | null {
   const ok = (d: string) => d >= from && (!before || d < before);
   let b = s.openingBalance;
   for (const r of ix.incomes) if (ok(r.date)) b += r.amount;
-  for (const st of ix.settlements) if (ok(st.date)) b += st.direction === 'out' ? -st.amount : st.amount;
+  for (const st of ix.settlements) if (ok(st.date) && !st.opening) b += st.direction === 'out' ? -st.amount : st.amount;
   for (const t of ix.txs) if (ok(t.date)) b -= t.totalAmount;
+  for (const p of ix.payables) if (p.origin === 'borrow' && ok(p.date)) b += p.amount;
+  for (const r of ix.repayments) if (r.mode === 'transfer' && ok(r.date)) b -= r.amount;
   return b;
 }
 
@@ -464,10 +559,96 @@ export function heldAt(ix: Index, before?: string) {
   const add = (id: string, v: number) => per.set(id, (per.get(id) ?? 0) + v);
   for (const st of ix.settlements) if (st.date < before) add(st.personId, st.direction === 'out' ? -st.amount : st.amount);
   for (const a of ix.snap.allocations) {
-    if (a.deletedAt || a.kind === 'forgive') continue;
+    if (a.deletedAt || a.kind === 'forgive' || a.kind === 'offset') continue;
     if (allocDate(ix, a) < before) add(a.personId, -a.amount);
   }
+  for (const r of ix.repayments) if (r.mode === 'hold' && r.date < before) add(r.personId, r.amount);
+  for (const p of ix.payables) if (p.origin === 'fromHeld' && p.date < before) add(p.personId, -p.amount);
   return [...per.values()].reduce((a, v) => a + Math.max(0, v), 0);
+}
+
+/**
+ * Tôi đang nợ (trước ngày `before`; không truyền = hiện tại), tách khoản đầu kỳ (ngoài sổ) và khoản phát sinh trong app.
+ */
+export function owedAt(ix: Index, before?: string) {
+  const left = new Map<string, number>();
+  for (const p of ix.payables) if (!before || p.date < before) left.set(p.id, p.amount);
+  for (const r of ix.repayments) if ((!before || r.date < before) && left.has(r.payableId)) left.set(r.payableId, left.get(r.payableId)! - r.amount);
+  for (const a of ix.offsets) {
+    if (!a.payableId || !left.has(a.payableId) || (before && offsetDate(ix, a) >= before)) continue;
+    left.set(a.payableId, left.get(a.payableId)! - a.amount);
+  }
+  let opening = 0, inApp = 0;
+  for (const [id, v] of left) {
+    if (v <= 0) continue;
+    if (ix.payableById.get(id)!.origin === 'opening') opening += v;
+    else inApp += v;
+  }
+  return { total: opening + inApp, opening, inApp };
+}
+
+/** Tôi đang nợ một người (hiện tại). */
+export function owedTo(ix: Index, personId: string) {
+  return ix.payables.filter((p) => p.personId === personId).reduce((s, p) => s + Math.max(0, p.amount - (ix.payableUsed.get(p.id) ?? 0)), 0);
+}
+
+export interface DebtRow { personId: string; iOwe: number; theyOwe: number }
+
+/** Công nợ hai chiều theo người (hiện tại), người có số lớn trước. */
+export function debtSummary(ix: Index): DebtRow[] {
+  const m = new Map<string, DebtRow>();
+  const get = (id: string) => m.get(id) ?? (m.set(id, { personId: id, iOwe: 0, theyOwe: 0 }), m.get(id)!);
+  for (const o of outstanding(ix)) get(o.personId).theyOwe = o.amount;
+  for (const p of ix.payables) {
+    const rem = p.amount - (ix.payableUsed.get(p.id) ?? 0);
+    if (rem > 0) get(p.personId).iOwe += rem;
+  }
+  return [...m.values()].filter((r) => r.iOwe > 0 || r.theyOwe > 0).sort((a, b) => b.iOwe + b.theyOwe - (a.iOwe + a.theyOwe));
+}
+
+export interface DebtEvent { date: string; label: string; delta: number; balance: number; kind: 'new' | 'repay' | 'offset' | 'waive'; ref: { type: 'payable' | 'repayment' | 'alloc'; id: string } }
+
+const ORIGIN = { opening: 'Nợ đầu kỳ', borrow: 'Vay', fromHeld: 'Ứng tiền đang giữ' } as const;
+const MODE = { hold: 'Trả nợ · giữ lại cho họ', transfer: 'Trả nợ · chuyển khoản', waive: 'Được xóa nợ' } as const;
+
+/** Một lần trả nợ bằng tiền (giữ lại / chuyển khoản) — hiện là một giao dịch tiền ra. */
+export interface RepayTx { key: string; personId: string; date: string; createdAt: string; amount: number; mode: 'hold' | 'transfer'; incomeId?: string | null; note?: string; ids: string[] }
+
+/** Gom các dòng trả nợ cùng một lần (cùng batch) thành một giao dịch, mới nhất trước. Được xóa nợ không phải tiền nên không có ở đây. */
+export function repayTxs(ix: Index): RepayTx[] {
+  const m = new Map<string, RepayTx>();
+  for (const r of ix.repayments) {
+    if (r.mode === 'waive') continue;
+    const key = r.batch ?? r.id;
+    const g = m.get(key);
+    if (g) { g.amount += r.amount; g.ids.push(r.id); continue; }
+    m.set(key, { key, personId: r.personId, date: r.date, createdAt: r.createdAt, amount: r.amount, mode: r.mode, incomeId: r.incomeId, note: r.note, ids: [r.id] });
+  }
+  return [...m.values()].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+}
+
+/** Sổ nợ của tôi với một người: phát sinh (+), trả / cấn trừ / được xóa (−), kèm số còn nợ. */
+export function debtLedger(ix: Index, personId: string): DebtEvent[] {
+  const ev: (Omit<DebtEvent, 'balance'> & { at: string })[] = [];
+  for (const p of ix.payables) {
+    if (p.personId !== personId) continue;
+    ev.push({ date: p.date, at: p.createdAt, label: ORIGIN[p.origin] + (p.note && p.note !== 'Số đầu kỳ' ? ` · ${p.note}` : ''), delta: p.amount, kind: 'new', ref: { type: 'payable', id: p.id } });
+  }
+  for (const r of ix.repayments) {
+    if (r.personId !== personId) continue;
+    const label = MODE[r.mode] + (r.incomeId ? ' · từ thu nhập' : '') + (r.note ? ` · ${r.note}` : '');
+    ev.push({ date: r.date, at: r.createdAt, label, delta: -r.amount, kind: r.mode === 'waive' ? 'waive' : 'repay', ref: { type: 'repayment', id: r.id } });
+  }
+  for (const a of ix.offsets) {
+    if (a.personId !== personId) continue;
+    const sh = ix.shareById.get(a.shareId);
+    const t = sh ? ix.tx.get(sh.transactionId) : undefined;
+    const name = t ? (t.opening ? 'Khoản họ nợ đầu kỳ' : t.title || t.productName || categoryPath(ix, t.categoryId)) : 'Khoản đã xóa';
+    ev.push({ date: offsetDate(ix, a), at: a.createdAt, label: `Cấn trừ · ${name}`, delta: -a.amount, kind: 'offset', ref: { type: 'alloc', id: a.id } });
+  }
+  ev.sort((a, b) => a.date.localeCompare(b.date) || a.at.localeCompare(b.at));
+  let bal = 0;
+  return ev.map(({ at: _at, ...e }) => ({ ...e, balance: (bal += e.delta) }));
 }
 
 /**
@@ -476,7 +657,8 @@ export function heldAt(ix: Index, before?: string) {
  */
 export function personalBalanceAt(ix: Index, before?: string): number | null {
   const bank = balanceAt(ix, before);
-  return bank === null ? null : bank - heldAt(ix, before);
+  // Nợ phát sinh trong app (vay, ứng tiền giữ) là của người khác; nợ đầu kỳ nằm ngoài sổ nên không trừ.
+  return bank === null ? null : bank - heldAt(ix, before) - owedAt(ix, before).inApp;
 }
 
 export interface HeldEvent { date: string; label: string; delta: number; balance: number; kind: 'in' | 'spend' | 'out' | 'gift' }
@@ -487,18 +669,36 @@ export function heldLedger(ix: Index, personId: string): HeldEvent[] {
   for (const st of ix.settlements) {
     if (st.personId !== personId) continue;
     const gift = (ix.giftsOfSettlement.get(st.id) ?? []).reduce((a, r) => a + r.amount, 0);
-    if (st.direction === 'out') ev.push({ date: st.date, at: st.createdAt, label: st.note ? `Trả lại · ${st.note}` : 'Trả lại', delta: -st.amount, kind: 'out' });
+    if (st.opening) ev.push({ date: st.date, at: st.createdAt, label: 'Số đầu kỳ', delta: st.amount, kind: 'in' });
+    else if (st.direction === 'out') ev.push({ date: st.date, at: st.createdAt, label: st.note ? `Trả lại · ${st.note}` : 'Trả lại', delta: -st.amount, kind: 'out' });
     else ev.push({ date: st.date, at: st.createdAt, label: (st.note ? `Nhận · ${st.note}` : 'Nhận') + (gift ? ` (cho luôn ${gift.toLocaleString('vi-VN')}đ)` : ''), delta: st.amount, kind: 'in' });
   }
   for (const a of ix.snap.allocations) {
-    if (a.deletedAt || a.kind === 'forgive' || a.personId !== personId) continue;
+    if (a.deletedAt || a.kind === 'forgive' || a.kind === 'offset' || a.personId !== personId) continue;
     const sh = ix.shareById.get(a.shareId);
     const t = sh ? ix.tx.get(sh.transactionId) : undefined;
     const name = t ? (t.title || t.productName || categoryPath(ix, t.categoryId)) : 'Khoản đã xóa';
     ev.push({ date: allocDate(ix, a), at: a.createdAt, label: (t?.onBehalf ? 'Chi hộ · ' : 'Trừ khoản · ') + name, delta: -a.amount, kind: 'spend' });
   }
+  for (const r of ix.repayments) {
+    if (r.personId !== personId || r.mode !== 'hold') continue;
+    ev.push({ date: r.date, at: r.createdAt, label: 'Trả nợ · giữ lại cho họ', delta: r.amount, kind: 'in' });
+  }
+  for (const p of ix.payables) {
+    if (p.personId !== personId || p.origin !== 'fromHeld') continue;
+    ev.push({ date: p.date, at: p.createdAt, label: 'Đã tiêu · chuyển thành khoản tôi nợ' + (p.note ? ` · ${p.note}` : ''), delta: -p.amount, kind: 'spend' });
+  }
   // Theo ngày, cùng ngày thì theo thứ tự ghi.
   ev.sort((a, b) => a.date.localeCompare(b.date) || a.at.localeCompare(b.at));
   let bal = 0;
   return ev.map(({ at: _at, ...e }) => ({ ...e, balance: (bal += e.delta) }));
+}
+
+/** Số đầu kỳ đã nhập của một người (UC-14), để sửa lại. */
+export function openingOf(ix: Index, personId: string) {
+  const st = ix.settlements.find((s) => s.opening && s.personId === personId);
+  const pay = ix.payables.find((p) => p.origin === 'opening' && p.personId === personId);
+  const t = ix.allTxs.find((x) => x.opening && (ix.sharesOfTx.get(x.id) ?? []).some((s) => s.personId === personId));
+  const sh = t ? (ix.sharesOfTx.get(t.id) ?? []).find((s) => s.personId === personId) : undefined;
+  return { date: st?.date ?? pay?.date ?? t?.date, held: st?.amount ?? 0, owedByMe: pay?.amount ?? 0, owedToMe: sh?.amount ?? 0 };
 }

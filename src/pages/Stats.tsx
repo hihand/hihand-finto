@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { fmtDayMonth, fmtDate, monthLabel, periodOf, periodRange, shiftMonth, today } from '../domain/period';
-import { balanceAt, periodStats, personalBalanceAt, yearStats } from '../domain/stats';
+import { balanceAt, outstanding, owedAt, periodStats, personalBalanceAt, yearStats } from '../domain/stats';
 import { useIndex } from '../ui/data';
 import { Empty, Icon, Segmented, SplitBar } from '../ui/kit';
-import { money, txTitle, useMask } from '../ui/format';
+import { money, short, txTitle, useMask } from '../ui/format';
 import YearChart from '../ui/YearChart';
 
 /** BR-12, BR-17, UC-07: thống kê tháng/năm — danh mục → danh mục con → từng giao dịch; theo tag; 12 tháng. */
@@ -36,6 +36,9 @@ export default function Stats() {
   const endBefore = isYear ? periodRange(`${year + 1}-01`, ix.startDay).from : range.to;
   const endBalance = balanceAt(ix, endBefore);
   const endPersonal = personalBalanceAt(ix, endBefore);
+  const endOwed = owedAt(ix, endBefore);
+  const theyOweNow = outstanding(ix).reduce((a, o) => a + o.amount, 0);
+  const showDebt = endOwed.total > 0 || st.repaid > 0 || st.waived > 0 || st.forgivenOld > 0 || st.borrowed > 0;
   const giveAll = st.give + st.forgiven;
   const maxInc = Math.max(1, ...st.incomeByCategory.map((g) => g.amount));
   const endDay = (() => { const d = new Date(range.to + 'T00:00:00'); d.setDate(d.getDate() - 1); return d; })();
@@ -70,7 +73,9 @@ export default function Stats() {
         <div className="card stack tight">
           <span className="kpi-label">Còn lại {isYear ? 'trong năm' : 'trong tháng'}</span>
           <span className={`kpi-value ${st.net < 0 ? 'c-give' : ''}`}>{mask(`${st.net < 0 ? '−' : '+'}${money(Math.abs(st.net))}`)}</span>
-          <span className="kpi-sub">Thu nhập − chi tiêu của tôi · không tính ứng trước, chi hộ</span>
+          <span className="kpi-sub">
+            Thu nhập − chi tiêu của tôi{st.repaidOld ? ` − trả nợ cũ ${mask(short(st.repaidOld))}` : ''}{st.waivedNew ? ` + được xóa nợ ${mask(short(st.waivedNew))}` : ''} · không tính ứng trước, chi hộ
+          </span>
         </div>
         <div className="card hero stack tight">
           <span className="kpi-label">Số dư cuối {isYear ? 'năm' : 'kỳ'}</span>
@@ -86,6 +91,29 @@ export default function Stats() {
         <div className="card stack tight"><span className="kpi-label">Ứng trước (sẽ thu lại)</span><span className="kpi-value c-owe">{money(st.advanced)}</span><span className="kpi-sub">phần chưa có tiền giữ bù{st.onBehalf ? ` · chi hộ ${money(st.onBehalf)} (trừ tiền giữ)` : ''}</span></div>
         <div className="card stack tight"><span className="kpi-label">Tiền ra tài khoản</span><span className="kpi-value">{money(st.total)}</span><span className="kpi-sub">gồm cả chi hộ, ứng trước · nhận vào (trả lại, gửi giữ) +{money(st.received)}{st.returned ? ` · trả lại tiền giữ −${money(st.returned)}` : ''}</span></div>
       </div>
+
+      {showDebt && (
+        <div className="grid-kpi" aria-label="Công nợ">
+          <div className="card stack tight">
+            <span className="kpi-label">Trả nợ</span>
+            <span className="kpi-value c-give">{st.repaid ? '−' : ''}{mask(money(st.repaid))}</span>
+            <span className="kpi-sub">
+              {st.repaidOld ? `nợ đầu kỳ ${mask(short(st.repaidOld))} (tính vào Còn lại)` : 'giữ lại + chuyển khoản + cấn trừ'}
+              {st.repaid - st.repaidOld > 0 ? ` · nợ trong app ${mask(short(st.repaid - st.repaidOld))}` : ''}
+            </span>
+          </div>
+          <div className="card stack tight">
+            <span className="kpi-label">Tôi còn nợ cuối {isYear ? 'năm' : 'kỳ'}</span>
+            <span className="kpi-value">{mask(money(endOwed.total))}</span>
+            <span className="kpi-sub">{endOwed.opening ? `đầu kỳ ${mask(short(endOwed.opening))}` : ''}{endOwed.opening && endOwed.inApp ? ' · ' : ''}{endOwed.inApp ? `vay / ứng ${mask(short(endOwed.inApp))}` : ''}{!endOwed.total ? 'đã trả hết' : ''}</span>
+          </div>
+          <div className="card stack tight">
+            <span className="kpi-label">Được xóa nợ · xóa nợ cho người khác</span>
+            <span className="kpi-value">{mask(money(st.waived))} · {money(st.forgivenOld + st.forgiven)}</span>
+            <span className="kpi-sub">{st.borrowed ? `vay mới ${mask(short(st.borrowed))} · ` : ''}người khác đang nợ tôi {money(theyOweNow)} (hiện tại)</span>
+          </div>
+        </div>
+      )}
 
       {ys && (
         <section className="card stack">

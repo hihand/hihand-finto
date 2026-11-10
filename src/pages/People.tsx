@@ -3,13 +3,14 @@ import { forgiveShare } from '../domain/ledger';
 import { today } from '../domain/period';
 import { parseAmount } from '../domain/split';
 import HeldModal from '../ui/HeldModal';
+import DebtModal from '../ui/DebtModal';
 import { Modal } from '../ui/kit';
 import { useMask, useRun } from '../ui/format';
 import type { Income } from '../db/schema';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { monthLabel, weekday } from '../domain/period';
-import { creditOf, peopleSummary, rootOf, categoryPath, giftsFromPeople, type Index } from '../domain/stats';
+import { creditOf, debtSummary, owedTo, peopleSummary, rootOf, categoryPath, giftsFromPeople, type Index } from '../domain/stats';
 import { useIndex } from '../ui/data';
 import { Avatar, Empty, Pill } from '../ui/kit';
 import { STATUS_LABEL, money, short, noteText } from '../ui/format';
@@ -26,6 +27,7 @@ export default function People() {
   const [filter, setFilter] = useState('all');
   const [held, setHeld] = useState<{ id: string | null; mode?: 'book' | 'in' } | null>(null);
   const [forgive, setForgive] = useState<{ shareId: string; remaining: number; title: string } | null>(null);
+  const [debt, setDebt] = useState<{ id: string | null } | null>(null);
   const mask = useMask();
   if (!ix) return <p className="muted">Đang tải…</p>;
 
@@ -48,13 +50,17 @@ export default function People() {
   for (const e of S?.entries ?? []) {
     const r = rootOf(ix, e.tx.categoryId);
     const k = r?.id ?? '?';
-    byCat.set(k, { name: r?.name ?? '?', amount: (byCat.get(k)?.amount ?? 0) + e.amount });
+    byCat.set(k, { name: e.tx.opening ? 'Số đầu kỳ' : r?.name ?? '?', amount: (byCat.get(k)?.amount ?? 0) + e.amount });
   }
   const filt = byCat.has(filter) ? filter : 'all';
   const shown = (S?.entries ?? []).filter((e) => filt === 'all' || rootOf(ix, e.tx.categoryId)?.id === filt);
   const months = new Map<string, typeof shown>();
   for (const e of shown) months.set(e.tx.date.slice(0, 7), [...(months.get(e.tx.date.slice(0, 7)) ?? []), e]);
   const credit = selId ? creditOf(ix, selId) : 0;
+  const iOwe = selId ? owedTo(ix, selId) : 0;
+  // Người còn công nợ trước; người đã huề hết (vẫn có sổ nợ) ở sau.
+  const debts = debtSummary(ix);
+  for (const id of new Set(ix.payables.map((x) => x.personId))) if (!debts.some((d) => d.personId === id)) debts.push({ personId: id, iOwe: 0, theyOwe: 0 });
 
   return (
     <>
@@ -105,6 +111,34 @@ export default function People() {
           </section>
           <section className="card stack">
             <div className="row between">
+              <h2>Công nợ</h2>
+              <button type="button" className="btn sm primary" onClick={() => setDebt({ id: null })}>+ Số đầu kỳ</button>
+            </div>
+            {debts.length === 0 && <span className="small muted">Khoản bạn đang nợ ai đó (hoặc ai đó nợ bạn) từ trước khi dùng app thì bấm “+ Số đầu kỳ”.</span>}
+            {debts.length > 0 && (
+              <div className="list">
+                {debts.map((d) => {
+                  const dp = ix.person.get(d.personId);
+                  return (
+                    <button type="button" className="item item-btn" key={d.personId} onClick={() => setDebt({ id: d.personId })} aria-label={`Công nợ với ${dp?.name}. Mở sổ nợ`}>
+                      <Avatar person={dp} />
+                      <span className="grow stack tight">
+                        <span className="title">{dp?.name}</span>
+                        <span className="meta">Sổ nợ · trả nợ · cấn trừ · xóa nợ</span>
+                      </span>
+                      <span className="stack tight" style={{ alignItems: 'flex-end' }}>
+                        {d.iOwe > 0 && <span className="num small c-give">Tôi nợ {mask(short(d.iOwe))}</span>}
+                        {d.theyOwe > 0 && <span className="num small c-owe">Nợ tôi {short(d.theyOwe)}</span>}
+                        {!d.iOwe && !d.theyOwe && <span className="small muted">Đã huề</span>}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+          <section className="card stack">
+            <div className="row between">
               <h2>Tiền giữ hộ</h2>
               <button type="button" className="btn sm primary" onClick={() => setHeld({ id: null, mode: 'in' })}>+ Nhận tiền giữ</button>
             </div>
@@ -137,11 +171,13 @@ export default function People() {
                     {tab === 'give' ? `${S.entries.length} khoản cho · không cần trả lại`
                       : `${S.entries.length} khoản · đã trả ${money(S.total - S.waiting)} · đang chờ ${money(S.waiting)}`}
                     {credit > 0 ? ` · đang giữ ${money(credit)}` : ''}
+                    {iOwe > 0 ? ` · tôi đang nợ ${mask(money(iOwe))}` : ''}
                   </span>
                   {noteText(ix, person.id) && <span className="note">{noteText(ix, person.id)}</span>}
                 </div>
                 <span className={`num ${tab === 'give' ? 'c-give' : 'c-owe'}`} style={{ fontSize: 24 }}>−{money(S.total)}</span>
                 {credit > 0 && <button type="button" className="btn sm" onClick={() => setHeld({ id: person.id })}>Tiền giữ hộ</button>}
+                <button type="button" className="btn sm" onClick={() => setDebt({ id: person.id })}>Công nợ</button>
                 {tab === 'owe' && S.waiting > 0 && (
                   <Link to={`/thu-tien?p=${person.id}`} className="btn sm" style={{ background: 'var(--owe-bg)', color: 'var(--owe)' }}>Thu tiền</Link>
                 )}
@@ -163,9 +199,10 @@ export default function People() {
                           <span className="grow stack tight">
                             <span className="title">{txTitle(ix, e.tx)}{e.tx.onBehalf ? ' · chi hộ' : ''}</span>
                             <span className="meta">
-                              {e.fromForgive ? 'Bạn bỏ qua khoản Đòi lại này' : `${rootOf(ix, e.tx.categoryId)?.name} · bill ${short(e.tx.totalAmount)}`}
+                              {e.fromForgive ? 'Bạn bỏ qua khoản Đòi lại này' : e.tx.opening ? 'Họ nợ từ trước khi dùng app' : `${rootOf(ix, e.tx.categoryId)?.name} · bill ${short(e.tx.totalAmount)}`}
                               {!e.fromForgive && e.status === 'partial' ? ` · đã trả ${short(e.paid)}` : ''}
                               {!e.fromForgive && e.forgiven > 0 ? ` · bỏ qua ${short(e.forgiven)}` : ''}
+                              {!e.fromForgive && e.offset ? ` · ${short(e.offset)} là trả nợ (cấn trừ)` : ''}
                             </span>
                           </span>
                           {e.status && <Pill kind={e.status}>{STATUS_LABEL[e.status]}</Pill>}
@@ -184,6 +221,7 @@ export default function People() {
         </section>
       </div>}
       {held && <HeldModal ix={ix} personId={held.id} initial={held.mode ?? 'book'} onClose={() => setHeld(null)} />}
+      {debt && <DebtModal ix={ix} personId={debt.id} initial={debt.id ? 'book' : 'opening'} onClose={() => setDebt(null)} />}
       {forgive && person && <ForgiveDialog name={person.name} {...forgive} onClose={() => setForgive(null)} />}
     </>
   );

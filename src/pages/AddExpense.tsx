@@ -2,14 +2,15 @@ import { useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { db, type ShareType, type SplitMode, type TxKind } from '../db/schema';
 import { addPerson } from '../domain/catalog';
-import { saveExpense } from '../domain/ledger';
+import { saveExpense, type PersonSettle } from '../domain/ledger';
 import { today } from '../domain/period';
 import { parseAmount, splitEqual, splitRemaining, type Participant, type ShareDraft } from '../domain/split';
-import { creditOf, rootOf, type Index } from '../domain/stats';
+import { creditOf, owedTo, rootOf, type Index } from '../domain/stats';
 import { useIndex } from '../ui/data';
-import { Avatar, Icon, Segmented, Switch } from '../ui/kit';
-import { money, short, useRun, useToast } from '../ui/format';
+import { Avatar, Icon, Segmented } from '../ui/kit';
+import { money, short, useMask, useRun, useToast } from '../ui/format';
 import { CategoryPicker, TagPicker } from '../ui/pickers';
+import { PAY_FOR } from '../db/seed';
 import IncomeForm from '../ui/IncomeForm';
 import HeldModal from '../ui/HeldModal';
 
@@ -84,6 +85,7 @@ function KindSwitch({ value, onChange }: { value: AddKind; onChange?: (k: TxKind
 function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | null; proxyFor: string | null }) {
   const nav = useNavigate();
   const run = useRun();
+  const mask = useMask();
   const toast = useToast();
   const [init] = useState(() => initial(ix, copyId, proxyFor));
   const [proxy, setProxy] = useState(init.proxy);
@@ -99,7 +101,8 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
   const [myText, setMyText] = useState(init.myText);
   const [parts, setParts] = useState<Part[]>(init.parts);
   const [mode, setMode] = useState<SplitMode>(init.mode);
-  const [applyCredit, setApplyCredit] = useState<boolean | null>(null);
+  /** Cách xử lý phần Đòi lại của từng người: trừ tiền giữ → cấn trừ khoản tôi nợ → còn lại để nợ / cho luôn. */
+  const [opts, setOpts] = useState<Record<string, PersonSettle>>({});
   const [newName, setNewName] = useState('');
   const [saving, setSaving] = useState(false);
   const [heldFor, setHeldFor] = useState<{ id: string | null } | null>(null);
@@ -126,7 +129,17 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
   const amountOf = (personId: string | null) => shares.find((s) => s.personId === personId)?.amount ?? 0;
   const active = ix.people.filter((p) => !p.archived || parts.some((x) => x.personId === p.id));
   const defaultApply = ix.snap.settings?.autoApplyCredit ?? true;
-  const credits = parts.filter((p) => p.type === 'owe').map((p) => ({ p, credit: creditOf(ix, p.personId) })).filter((x) => x.credit > 0);
+  const optOf = (id: string): Required<PersonSettle> => ({ credit: opts[id]?.credit ?? (proxy || defaultApply), offset: opts[id]?.offset ?? true, rest: opts[id]?.rest ?? 'owe' });
+  const setOpt = (id: string, patch: PersonSettle) => setOpts((o) => ({ ...o, [id]: { ...o[id], ...patch } }));
+
+  // Chi hộ: hai danh mục hay dùng — trả hóa đơn giúp, hoặc chuyển tiền thanh toán thay người đó.
+  const bills = ix.roots.find((c) => c.name === 'Hóa đơn');
+  const transfer = ix.roots.find((c) => c.name === 'Chuyển tiền');
+  const payFor = transfer ? (ix.childrenOf.get(transfer.id) ?? []).find((c) => c.name === PAY_FOR) : undefined;
+  const proxyQuick = [
+    ...(bills ? [{ label: 'Trả hóa đơn giúp', rootId: bills.id, subId: '', icon: bills.icon }] : []),
+    ...(transfer && payFor ? [{ label: `Chuyển tiền › ${PAY_FOR}`, rootId: transfer.id, subId: payFor.id, icon: transfer.icon }] : []),
+  ];
 
   const pickRoot = (id: string) => {
     setRootId(id);
@@ -134,6 +147,8 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
     setTags([]);
     const root = ix.category.get(id);
     // Danh mục không tính vào Chi của tôi (Chuyển tiền) → mặc định là chuyển tiền (RULE-04).
+    // Đang chi hộ thì giữ nguyên chi hộ (ví dụ Chuyển tiền › Thanh toán hộ).
+    if (proxy) return;
     if (root && !root.countsAsMine) switchKind('transfer');
     else if (isTransfer) switchKind('expense');
   };
@@ -196,19 +211,25 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
     const ok = await run(() => saveExpense(db, {
       date, kind, categoryId: subId || rootId, title: title.trim(), productName: product.trim() || undefined,
       totalAmount: total, splitMode: mode, tagIds: tags, shares: nonZero.length ? nonZero : shares,
-      applyCredit: applyCredit ?? defaultApply, onBehalf: proxy,
+      applyCredit: defaultApply, onBehalf: proxy,
+      perPerson: Object.fromEntries(settlePlan.map((x) => [x.id, optOf(x.id)])),
     }), proxy ? 'Đã ghi chi hộ' : 'Đã lưu giao dịch');
     setSaving(false);
     if (ok) nav('/');
   };
 
   const splitTitle = proxy ? 'Chi hộ cho ai?' : isTransfer ? 'Chuyển cho ai?' : `Đi cùng ai? · ${participants.length} người`;
-  /** Chi hộ: trừ vào tiền đang giữ của từng người, phần vượt thành Đòi lại. */
-  const proxyPlan = proxy ? shares.filter((s) => s.personId).map((s) => {
-    const c = creditOf(ix, s.personId!);
-    const fromHeld = Math.min(c, s.amount);
-    return { name: ix.person.get(s.personId!)?.name ?? '', fromHeld, left: c - fromHeld, owe: s.amount - fromHeld };
-  }) : [];
+  /** Xem trước phần Đòi lại của từng người: trừ tiền giữ → cấn trừ khoản tôi nợ → phần còn lại. */
+  const settlePlan = shares.filter((s) => s.type === 'owe' && s.personId && s.amount > 0).map((s) => {
+    const id = s.personId!;
+    const o = optOf(id);
+    const held = creditOf(ix, id);
+    const owed = owedTo(ix, id);
+    const fromHeld = o.credit ? Math.min(held, s.amount) : 0;
+    const offset = o.offset ? Math.min(owed, s.amount - fromHeld) : 0;
+    return { id, name: ix.person.get(id)?.name ?? '', amount: s.amount, held, owed, fromHeld, offset, rest: s.amount - fromHeld - offset, o };
+  }).filter((x) => proxy || x.held > 0 || x.owed > 0);
+  const offsetPlanned = settlePlan.reduce((a, x) => a + x.offset, 0);
 
   return (
     <>
@@ -236,6 +257,19 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
           </div>
 
           <KindSwitch value={proxy ? 'proxy' : kind} onChange={switchKind} />
+          {proxy && proxyQuick.length > 0 && (
+            <div className="field">
+              <span className="label" id="proxy-quick">Chọn nhanh</span>
+              <div className="chips" role="group" aria-labelledby="proxy-quick">
+                {proxyQuick.map((q) => (
+                  <button type="button" key={q.label} className="chip sm" aria-pressed={rootId === q.rootId && subId === q.subId}
+                    onClick={() => { setRootId(q.rootId); setSubId(q.subId); setTags([]); }}>
+                    <Icon name={q.icon} size={14} />{q.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <CategoryPicker ix={ix} rootId={rootId} subId={subId} onRoot={pickRoot} onSub={setSubId} />
           <TagPicker ix={ix} rootId={rootId} value={tags} onChange={setTags} />
 
@@ -335,29 +369,39 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
             </div>
           )}
 
-          {credits.length > 0 && !proxy && (
-            <div className="setting" style={{ borderTop: 0, paddingBottom: 0 }}>
-              <div className="grow stack tight">
-                <span className="strong small">Tự trừ vào tiền đang giữ</span>
-                <span className="xs muted">{credits.map(({ p, credit }) => `Đang giữ của ${ix.person.get(p.personId)?.name} ${short(credit)}`).join(' · ')}</span>
-              </div>
-              <Switch label="Tự trừ vào tiền đang giữ" checked={applyCredit ?? defaultApply} onChange={setApplyCredit} />
+          {settlePlan.map((x) => (
+            <div className="summary ok stack tight" key={x.id} aria-live="polite">
+              <div className="row"><span className="strong">{x.name} · {money(x.amount)}</span><span className="xs muted">Khoản này xử lý thế nào?</span></div>
+              {x.held > 0 && (
+                <label className="row nowrap small" style={{ gap: 8 }}>
+                  <input type="checkbox" checked={x.o.credit} onChange={(e) => setOpt(x.id, { credit: e.target.checked })} />
+                  <span className="grow">Trừ vào tiền đang giữ của {x.name} (đang giữ {money(x.held)})</span>
+                </label>
+              )}
+              {x.owed > 0 && (
+                <label className="row nowrap small" style={{ gap: 8 }}>
+                  <input type="checkbox" checked={x.o.offset} onChange={(e) => setOpt(x.id, { offset: e.target.checked })} />
+                  <span className="grow">Cấn trừ vào khoản tôi đang nợ {x.name} (đang nợ {mask(money(x.owed))})</span>
+                </label>
+              )}
+              {x.rest > 0 && <span className="xs muted">Phần còn lại {money(x.rest)}:</span>}
+              {x.rest > 0 && (
+                <Segmented label={`Phần còn lại ${money(x.rest)}`} value={x.o.rest} onChange={(v) => setOpt(x.id, { rest: v })}
+                  options={[['owe', `${x.name} nợ lại tôi`], ['give', `Cho ${x.name} luôn`]]} />
+              )}
+              <span className="small">
+                → {[
+                  x.fromHeld > 0 && `Trừ tiền giữ ${short(x.fromHeld)} (còn giữ ${short(x.held - x.fromHeld)})`,
+                  x.offset > 0 && `Cấn trừ ${short(x.offset)} (còn nợ ${x.name} ${mask(short(x.owed - x.offset))})`,
+                  x.rest > 0 && (x.o.rest === 'give' ? `Cho ${x.name} ${short(x.rest)}` : `${x.name} nợ lại ${short(x.rest)}`),
+                ].filter(Boolean).join(' · ')}
+              </span>
             </div>
-          )}
-
-          {proxy && proxyPlan.length > 0 && (
-            <div className="summary ok" aria-live="polite">
-              {proxyPlan.map((x) => (
-                <div className="stack tight" key={x.name}>
-                  <div className="row"><span className="strong">{x.name}</span><span className="num">trừ tiền giữ {money(x.fromHeld)}</span></div>
-                  <span className="small muted">Còn giữ {money(x.left)}{x.owe > 0 ? ` · vượt ${money(x.owe)} → Đòi lại ${x.name}` : ''}</span>
-                </div>
-              ))}
-            </div>
-          )}
+          ))}
           {!proxy && <div className="summary" aria-live="polite">
             <div className="row"><span className="c-mine strong">Của tôi</span><span className="num">{money(sums.mine)}</span></div>
-            <div className="row"><span className="c-owe strong">Đòi lại</span><span className="num">{money(sums.owe)}</span></div>
+            <div className="row"><span className="c-owe strong">Đòi lại</span><span className="num">{money(sums.owe - offsetPlanned)}</span></div>
+            {offsetPlanned > 0 && <div className="row"><span className="c-give strong">Trả nợ (cấn trừ)</span><span className="num">{mask(money(offsetPlanned))}</span></div>}
             <div className="row"><span className="c-give strong">Cho đi</span><span className="num">{money(sums.give)}</span></div>
           </div>}
           <div className="row nowrap">

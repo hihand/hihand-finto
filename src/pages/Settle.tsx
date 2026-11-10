@@ -4,10 +4,11 @@ import { db } from '../db/schema';
 import { applyCreditTo, settle } from '../domain/ledger';
 import { fmtDayMonth, today } from '../domain/period';
 import { parseAmount } from '../domain/split';
-import { categoryPath, creditOf, openDebts, outstanding } from '../domain/stats';
+import { categoryPath, creditOf, openDebts, outstanding, owedTo } from '../domain/stats';
 import { useIndex } from '../ui/data';
 import { Avatar, Empty, Icon, Segmented } from '../ui/kit';
 import HeldModal from '../ui/HeldModal';
+import DebtModal from '../ui/DebtModal';
 import { money, short, useRun, noteText, txTitle } from '../ui/format';
 
 const toText = (n: number) => (n ? n.toLocaleString('vi-VN') : '');
@@ -26,6 +27,7 @@ export default function Settle() {
   const [surplus, setSurplus] = useState<'keep' | 'gift'>('keep');
   const [shortfall, setShortfall] = useState<'owe' | 'forgive'>('owe');
   const [held, setHeld] = useState<null | 'book' | 'in' | 'return' | 'gift'>(null);
+  const [debtMode, setDebtMode] = useState<null | 'book' | 'offset'>(null);
   if (!ix) return <p className="muted">Đang tải…</p>;
 
   const owes = outstanding(ix);
@@ -140,6 +142,13 @@ export default function Settle() {
               Tự chọn khoản cũ nhất
             </button>
           </div>
+          {owedTo(ix, sel) > 0 && (
+            <div className="row small" style={{ gap: 8 }}>
+              <span className="grow"><span className="c-give strong">Bạn cũng đang nợ {P.name} {money(owedTo(ix, sel))}</span> <span className="muted">— có thể cấn trừ để huề.</span></span>
+              <button type="button" className="btn sm" onClick={() => setDebtMode('offset')}>Cấn trừ</button>
+              <button type="button" className="btn sm" onClick={() => setDebtMode('book')}>Sổ nợ</button>
+            </div>
+          )}
           {credit > 0 && (
             <div className="row small" style={{ gap: 8 }}>
               <span className="grow"><span className="c-income strong">Đang giữ của {P.name} {money(credit)}</span> <span className="muted">— được cộng khi trừ khoản; để trống số tiền nhận nếu chỉ muốn trừ vào tiền đang giữ.</span></span>
@@ -216,6 +225,7 @@ export default function Settle() {
         </section>
       </div>
       {held && <HeldModal ix={ix} personId={sel} initial={held} onClose={() => setHeld(null)} />}
+      {debtMode && <DebtModal ix={ix} personId={sel} initial={debtMode} onClose={() => setDebtMode(null)} />}
     </>
   );
 }

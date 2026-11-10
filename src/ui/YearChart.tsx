@@ -57,6 +57,7 @@ export default function YearChart({ months, current, onOpen }: {
               <span><i style={{ background: 'var(--chart-in)' }} />Thu nhập <b>{mask(money(h.income))}</b></span>
               <span><i style={{ background: 'var(--chart-out)' }} />Chi tiêu <b>{money(h.spent)}</b></span>
               {h.advanced > 0 && <span className="muted">Ứng trước {money(h.advanced)} (sẽ thu lại)</span>}
+              {h.repaid > 0 && <span className="muted">Trả nợ {mask(money(h.repaid))}</span>}
               <span>Còn lại <b>{mask(`${h.net < 0 ? '−' : '+'}${money(Math.abs(h.net))}`)}</b></span>
               <span className="muted">Chi của tôi {money(h.mine)}</span>
             </div>

@@ -1,5 +1,8 @@
 import { base, type FintoDB, type Category, type Tag, type CategoryTag } from './schema';
 
+/** Danh mục con của Chuyển tiền cho khoản chi hộ là chuyển tiền thanh toán thay người khác (UC-12). */
+export const PAY_FOR = 'Thanh toán hộ';
+
 /** Danh mục, danh mục con và tag mặc định (theo mục "Dữ liệu mặc định" trong tài liệu). */
 const DEFAULTS: { name: string; icon: string; countsAsMine?: boolean; children: string[]; tags: string[] }[] = [
   { name: 'Ăn uống', icon: 'utensils', children: ['Bữa chính', 'Cà phê & trà sữa', 'Ăn vặt', 'Lẩu/nướng/nhà hàng'], tags: ['đi chơi', 'bạn bè', 'người yêu', 'gia đình', 'ăn hằng ngày'] },
@@ -8,7 +11,7 @@ const DEFAULTS: { name: string; icon: string; countsAsMine?: boolean; children: 
   { name: 'Mua sắm', icon: 'bag', children: ['Quần áo', 'Đồ gia dụng', 'Đồ điện tử', 'Mua online'], tags: ['người yêu', 'quà'] },
   { name: 'Giải trí', icon: 'film', children: ['Phim', 'Game', 'Du lịch'], tags: ['đi chơi', 'bạn bè', 'người yêu'] },
   { name: 'Quà tặng', icon: 'gift', children: ['Sinh nhật', 'Lễ tết'], tags: ['bạn bè', 'người yêu', 'gia đình'] },
-  { name: 'Chuyển tiền', icon: 'send', countsAsMine: false, children: ['Gia đình', 'Cho mượn'], tags: ['gia đình'] },
+  { name: 'Chuyển tiền', icon: 'send', countsAsMine: false, children: ['Gia đình', 'Cho mượn', PAY_FOR], tags: ['gia đình'] },
   { name: 'Khác', icon: 'dots', children: [], tags: [] },
 ];
 
@@ -16,6 +19,22 @@ export async function seedIfEmpty(db: FintoDB) {
   await seedExpense(db);
   await seedIncomeCategories(db);
   await seedBills(db);
+  await seedPayFor(db);
+}
+
+/** Thêm "Chuyển tiền › Thanh toán hộ" một lần cho sổ cũ (sổ mới đã có trong DEFAULTS). */
+export async function seedPayFor(db: FintoDB) {
+  await db.transaction('rw', [db.settings, db.categories], async () => {
+    const s = await db.settings.get('settings');
+    if (!s || s.payForSeeded) return;
+    const cats = (await db.categories.toArray()).filter((c) => !c.deletedAt && c.kind !== 'income');
+    const root = cats.find((c) => c.parentId === null && c.name === 'Chuyển tiền');
+    if (root && !cats.some((c) => c.parentId === root.id && c.name === PAY_FOR)) {
+      const n = cats.filter((c) => c.parentId === root.id).length;
+      await db.categories.add({ ...base(), name: PAY_FOR, icon: root.icon, parentId: root.id, countsAsMine: root.countsAsMine, sortOrder: n, kind: 'expense' });
+    }
+    await db.settings.update('settings', { payForSeeded: true });
+  });
 }
 
 /** Danh mục Hóa đơn (UC-12: trả hóa đơn hộ người khác), thêm một lần cho cả sổ cũ. */

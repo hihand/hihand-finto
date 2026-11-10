@@ -1,8 +1,8 @@
 import { db } from './schema';
-import { seedBills, seedIncomeCategories } from './seed';
+import { seedBills, seedIncomeCategories, seedPayFor } from './seed';
 
 const TABLES = ['people', 'groups', 'groupMembers', 'categories', 'tags', 'categoryTags', 'transactions',
-  'transactionTags', 'shares', 'settlements', 'allocations', 'monthNotes', 'incomes', 'settings'] as const;
+  'transactionTags', 'shares', 'settlements', 'allocations', 'monthNotes', 'incomes', 'payables', 'repayments', 'settings'] as const;
 
 export interface BackupFile {
   app: 'hihand-finto';
@@ -21,7 +21,7 @@ export async function exportBackup(): Promise<Blob> {
 
 /** Khôi phục: thay toàn bộ dữ liệu hiện có bằng nội dung file. */
 /** Bảng có thể thiếu trong file sao lưu cũ (thêm ở bản sau). */
-const OPTIONAL = new Set<string>(['incomes']);
+const OPTIONAL = new Set<string>(['incomes', 'payables', 'repayments']);
 
 /** Kiểm tra file trước khi xóa gì: sai thì báo lỗi và dữ liệu hiện có giữ nguyên. */
 function validate(text: string): BackupFile {
@@ -58,4 +58,5 @@ export async function importBackup(text: string) {
   // File sao lưu từ bản chưa có thu nhập: tạo danh mục thu mặc định.
   await seedIncomeCategories(db);
   await seedBills(db);
+  await seedPayFor(db);
 }

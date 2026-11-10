@@ -2,18 +2,18 @@ import { lazy, Suspense, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { Income, Settlement, Transaction } from '../db/schema';
 import { fmtDate, inRange, monthLabel, periodOf, periodRange, shiftMonth, today, weekday } from '../domain/period';
-import { categoryPath, fold, rootOf, txMatches } from '../domain/stats';
+import { categoryPath, fold, repayTxs, rootOf, txMatches, type RepayTx } from '../domain/stats';
 import { useIndex } from '../ui/data';
 import EditTx from '../ui/EditTx';
 // Xuất Excel (kèm thư viện nén) chỉ tải khi mở hộp thoại, để bản chính nhẹ hơn.
 const ExportDialog = lazy(() => import('../ui/ExportDialog'));
 import { Empty, Icon, Modal } from '../ui/kit';
 import { money, short, useMask } from '../ui/format';
-import { IncomeRow, SettlementRow, TxRow } from '../ui/tx';
+import { IncomeRow, RepayRow, SettlementRow, TxRow } from '../ui/tx';
 import IncomeForm from '../ui/IncomeForm';
 
-type Kind = 'all' | 'expense' | 'transfer' | 'income' | 'in';
-type Row = { date: string; created: string; tx?: Transaction; st?: Settlement; inc?: Income };
+type Kind = 'all' | 'expense' | 'transfer' | 'income' | 'in' | 'repay';
+type Row = { date: string; created: string; tx?: Transaction; st?: Settlement; inc?: Income; rp?: RepayTx };
 
 export default function Transactions() {
   const ix = useIndex();
@@ -35,17 +35,23 @@ export default function Transactions() {
 
   const catRoots = kind === 'income' ? ix.incomeRoots : ix.roots;
   const catOk = (categoryId: string) => cat === 'all' || rootOf(ix, categoryId)?.id === cat;
-  const txs = kind === 'in' || kind === 'income' ? [] : ix.txs.filter((t) => scope(t.date) && (kind === 'all' || t.kind === kind)
+  const txs = kind === 'in' || kind === 'income' || kind === 'repay' ? [] : ix.txs.filter((t) => scope(t.date) && (kind === 'all' || t.kind === kind)
     && catOk(t.categoryId) && txMatches(ix, t, q));
   const incs = kind === 'all' || kind === 'income'
     ? ix.incomes.filter((r) => scope(r.date) && catOk(r.categoryId)
       && (!q || fold(`${r.title} ${categoryPath(ix, r.categoryId)} ${r.personId ? ix.person.get(r.personId)?.name ?? '' : ''} thu nhap`).includes(fold(q))))
     : [];
   const sts = (kind === 'all' || kind === 'in') && cat === 'all'
-    ? ix.settlements.filter((s) => scope(s.date) && (!q || fold(`${ix.person.get(s.personId)?.name ?? ''} ${s.note ?? ''}`).includes(fold(q))))
+    ? ix.settlements.filter((s) => !s.opening && scope(s.date) && (!q || fold(`${ix.person.get(s.personId)?.name ?? ''} ${s.note ?? ''}`).includes(fold(q))))
+    : [];
+
+  // Trả nợ bằng tiền (giữ lại / chuyển khoản) là một giao dịch tiền ra.
+  const rps = (kind === 'all' || kind === 'repay') && cat === 'all'
+    ? repayTxs(ix).filter((r) => scope(r.date) && (!q || fold(`tra no ${ix.person.get(r.personId)?.name ?? ''} ${r.note ?? ''}`).includes(fold(q))))
     : [];
 
   const rows: Row[] = [
+    ...rps.map((r) => ({ date: r.date, created: r.createdAt, rp: r })),
     ...txs.map((t) => ({ date: t.date, created: t.createdAt, tx: t })),
     ...sts.map((s) => ({ date: s.date, created: s.createdAt, st: s })),
     // Phần "cho luôn" gắn với lần nhận hiện trong dòng lần nhận đó, trừ khi đang lọc riêng Thu nhập.
@@ -58,17 +64,27 @@ export default function Transactions() {
   const inSum = sts.filter((s) => s.direction !== 'out').reduce((a, s) => a + s.amount, 0);
   const outSum = sts.filter((s) => s.direction === 'out').reduce((a, s) => a + s.amount, 0);
   const incSum = incs.reduce((a, r) => a + r.amount, 0);
+  const repaySum = rps.reduce((a, r) => a + r.amount, 0);
   // RULE-14: chi tiêu thực của tôi = Của tôi + Cho đi; ứng trước = phần Đòi lại chưa có tiền giữ bù.
   let spent = 0, advanced = 0;
   for (const t of txs) {
     for (const sh of ix.sharesOfTx.get(t.id) ?? []) {
-      if (sh.type === 'owe') advanced += Math.max(0, sh.amount - (ix.heldCover.get(sh.id) ?? 0) - (ix.forgivenByShare.get(sh.id) ?? 0));
+      if (sh.type === 'owe') advanced += Math.max(0, sh.amount - (ix.heldCover.get(sh.id) ?? 0) - (ix.offsetCover.get(sh.id) ?? 0) - (ix.forgivenByShare.get(sh.id) ?? 0));
       else spent += sh.amount;
     }
   }
-  const net = incSum - spent;
+  // Trả khoản nợ đầu kỳ tính vào "Còn lại" (giống Tổng quan / Thống kê); nợ phát sinh trong app thì không.
+  // Gồm cả phần cấn trừ trong các khoản chi hộ / chia bill đang hiện (cấn trừ = trả nợ).
+  const isOld = (payableId?: string) => ix.payableById.get(payableId ?? '')?.origin === 'opening';
+  const shown = new Set(txs.flatMap((t) => (ix.sharesOfTx.get(t.id) ?? []).map((sh) => sh.id)));
+  const repaidOld = rps.flatMap((r) => r.ids).reduce((a, id) => {
+    const rp = ix.repayments.find((x) => x.id === id);
+    return a + (rp && isOld(rp.payableId) ? rp.amount : 0);
+  }, 0) + ix.offsets.filter((o) => shown.has(o.shareId) && isOld(o.payableId)).reduce((a, o) => a + o.amount, 0);
+  const net = incSum - spent - repaidOld;
 
-  const KINDS: [Kind, string][] = [['all', 'Tất cả'], ['expense', 'Chi tiêu'], ['transfer', 'Chuyển tiền'], ['income', 'Thu nhập'], ['in', 'Được trả lại & giữ hộ']];
+  const KINDS: [Kind, string][] = [['all', 'Tất cả'], ['expense', 'Chi tiêu'], ['transfer', 'Chuyển tiền'], ['income', 'Thu nhập'], ['in', 'Được trả lại & giữ hộ'],
+    ...(ix.repayments.length ? [['repay', 'Trả nợ']] as [Kind, string][] : [])];
   const pickKind = (k: Kind) => { setKind(k); setCat('all'); };
 
   return (
@@ -102,7 +118,7 @@ export default function Transactions() {
             {KINDS.map(([k, l]) => <button type="button" key={k} className="chip" aria-pressed={kind === k} onClick={() => pickKind(k)}>{l}</button>)}
           </div>
         </div>
-        {kind !== 'in' && <div className="chips" role="group" aria-label="Danh mục">
+        {kind !== 'in' && kind !== 'repay' && <div className="chips" role="group" aria-label="Danh mục">
           <button type="button" className="chip sm" aria-pressed={cat === 'all'} onClick={() => setCat('all')}>Mọi danh mục</button>
           {catRoots.map((c) => (
             <button type="button" key={c.id} className="chip sm" aria-pressed={cat === c.id} onClick={() => setCat(c.id)}><Icon name={c.icon} size={14} />{c.name}</button>
@@ -114,19 +130,21 @@ export default function Transactions() {
         <div className="card stack tight"><span className="kpi-label">Thu nhập</span><span className="kpi-value c-income">{mask(`+${money(incSum)}`)}</span></div>
         <div className="card stack tight"><span className="kpi-label">Chi tiêu của tôi</span><span className="kpi-value">{spent ? '−' : ''}{money(spent)}</span><span className="kpi-sub">Của tôi + Cho đi</span></div>
         <div className="card stack tight"><span className="kpi-label">Ứng trước (sẽ thu lại)</span><span className="kpi-value c-owe">{money(advanced)}</span>
-          <span className="kpi-sub">tiền ra tài khoản −{short(out)} · nhận vào (trả lại, gửi giữ) +{short(inSum)}{outSum > 0 ? ` · trả lại tiền giữ −${short(outSum)}` : ''}</span></div>
-        <div className="card stack tight"><span className="kpi-label">Còn lại (thu nhập − chi tiêu)</span><span className={`kpi-value ${net < 0 ? 'c-give' : ''}`}>{incSum ? mask(`${net < 0 ? '−' : '+'}${money(Math.abs(net))}`) : `${net < 0 ? '−' : '+'}${money(Math.abs(net))}`}</span></div>
+          <span className="kpi-sub">tiền ra tài khoản −{short(out)} · nhận vào (trả lại, gửi giữ) +{short(inSum)}{outSum > 0 ? ` · trả lại tiền giữ −${short(outSum)}` : ''}{repaySum > 0 ? ` · trả nợ −${mask(short(repaySum))}` : ''}</span></div>
+        <div className="card stack tight"><span className="kpi-label">Còn lại (thu nhập − chi tiêu{repaidOld ? ' − trả nợ cũ' : ''})</span><span className={`kpi-value ${net < 0 ? 'c-give' : ''}`}>{incSum || repaidOld ? mask(`${net < 0 ? '−' : '+'}${money(Math.abs(net))}`) : `${net < 0 ? '−' : '+'}${money(Math.abs(net))}`}</span></div>
       </div>
 
       <section className="card" aria-label="Danh sách giao dịch">
         {rows.length === 0 && <Empty>Không có giao dịch nào khớp bộ lọc.</Empty>}
         {[...days.entries()].map(([d, list]) => {
-          const dayNet = list.reduce((a, r) => a - (r.tx?.totalAmount ?? 0) + (r.st ? (r.st.direction === 'out' ? -r.st.amount : r.st.amount + (ix.giftsOfSettlement.get(r.st.id) ?? []).reduce((x, g) => x + g.amount, 0)) : 0) + (r.inc?.amount ?? 0), 0);
+          const dayNet = list.reduce((a, r) => a - (r.tx?.totalAmount ?? 0) + (r.st ? (r.st.direction === 'out' ? -r.st.amount : r.st.amount + (ix.giftsOfSettlement.get(r.st.id) ?? []).reduce((x, g) => x + g.amount, 0)) : 0) + (r.inc?.amount ?? 0) - (r.rp?.amount ?? 0), 0);
           return (
             <div key={d}>
-              <div className="daygroup-head"><span>{weekday(d)}, {fmtDate(d)}</span><span>{dayNet ? (list.some((r) => r.inc || (r.st && ix.giftsOfSettlement.has(r.st.id))) ? mask : (x: string) => x)(`${dayNet < 0 ? '−' : '+'}${money(Math.abs(dayNet))}`) : ''}</span></div>
+              <div className="daygroup-head"><span>{weekday(d)}, {fmtDate(d)}</span><span>{dayNet ? (list.some((r) => r.inc || r.rp || (r.st && ix.giftsOfSettlement.has(r.st.id))) ? mask : (x: string) => x)(`${dayNet < 0 ? '−' : '+'}${money(Math.abs(dayNet))}`) : ''}</span></div>
               <div className="list">
-                {list.map((r) => r.tx
+                {list.map((r) => r.rp
+                  ? <RepayRow key={r.rp.key} ix={ix} rp={r.rp} />
+                  : r.tx
                   ? <TxRow key={r.tx.id} ix={ix} tx={r.tx} onEdit={setEditing} />
                   : r.inc
                     ? <IncomeRow key={r.inc.id} ix={ix} income={r.inc} onEdit={setEditInc} />

@@ -8,7 +8,7 @@ import { periodOf, shiftMonth } from './period';
  * Trả về số ghi chú đã ghi.
  */
 export async function runMonthEnd(db: FintoDB, todayIso: string) {
-  return db.transaction('rw', [db.settings, db.people, db.settlements, db.allocations, db.monthNotes], async () => {
+  return db.transaction('rw', [db.settings, db.people, db.settlements, db.allocations, db.payables, db.repayments, db.monthNotes], async () => {
     const s = await db.settings.get('settings');
     if (!s) return 0;
     const current = periodOf(todayIso, s.monthStartDay);

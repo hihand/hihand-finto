@@ -1,6 +1,6 @@
 import type { Sheet } from '../lib/xlsx';
 import { inRange } from './period';
-import { rootOf, statusOf, type Index } from './stats';
+import { debtLedger, oweAmount, rootOf, statusOf, type Index } from './stats';
 
 const TYPE = { mine: 'Của tôi', owe: 'Đòi lại', give: 'Cho đi' } as const;
 const STATUS = { paid: 'Đã trả', partial: 'Trả một phần', open: 'Đang chờ' } as const;
@@ -18,13 +18,14 @@ export function exportSheets(ix: Index, range: { from: string; to: string } | nu
       return [
         { date: t.date }, t.title, root?.name ?? '', sub?.parentId ? sub.name : '', tags, t.productName ?? '',
         t.kind === 'transfer' ? 'Chuyển tiền' : t.onBehalf ? 'Chi hộ' : 'Chi tiêu', t.totalAmount,
-        s.personId ? ix.person.get(s.personId)?.name ?? '' : 'Tôi', TYPE[s.type], s.amount,
+        s.personId ? ix.person.get(s.personId)?.name ?? '' : 'Tôi',
+        s.type === 'owe' && oweAmount(ix, s) < s.amount ? (oweAmount(ix, s) ? 'Đòi lại + trả nợ (cấn trừ)' : 'Trả nợ (cấn trừ)') : TYPE[s.type], s.amount,
         paid, paid === null ? null : s.amount - Math.min(s.amount, ix.paid.get(s.id) ?? 0), s.type === 'owe' ? STATUS[statusOf(ix, s)] : '',
         s.type === 'mine' ? (root?.countsAsMine ?? true ? 'Có' : 'Không') : '',
       ];
     });
   });
-  const sts = ix.settlements.filter((s) => inR(s.date)).sort((a, b) => a.date.localeCompare(b.date));
+  const sts = ix.settlements.filter((s) => !s.opening && inR(s.date)).sort((a, b) => a.date.localeCompare(b.date));
   const settleRows = sts.map((s) => {
     const allocs = ix.allocsOfSettlement.get(s.id) ?? [];
     const used = allocs.filter((x) => x.kind !== 'forgive').reduce((a, x) => a + x.amount, 0);
@@ -39,6 +40,18 @@ export function exportSheets(ix: Index, range: { from: string; to: string } | nu
     const sub = ix.category.get(r.categoryId);
     return [{ date: r.date }, root?.name ?? '', sub?.parentId ? sub.name : '', r.amount, r.personId ? ix.person.get(r.personId)?.name ?? '' : '', r.title];
   });
+  // Công nợ: mọi dòng của sổ nợ (tôi nợ người khác) + các khoản người khác nợ đầu kỳ.
+  const debtRows = ix.people.flatMap((p) => debtLedger(ix, p.id).filter((e) => inR(e.date)).map((e) => [
+    { date: e.date }, p.name, 'Tôi nợ', e.label, e.delta, e.balance,
+  ]));
+  for (const t of ix.allTxs) {
+    if (!t.opening || !inR(t.date)) continue;
+    for (const s of ix.sharesOfTx.get(t.id) ?? []) {
+      const paid = Math.min(s.amount, ix.paid.get(s.id) ?? 0);
+      debtRows.push([{ date: t.date }, ix.person.get(s.personId ?? '')?.name ?? '', 'Họ nợ tôi', 'Nợ đầu kỳ', s.amount, s.amount - paid]);
+    }
+  }
+  debtRows.sort((a, b) => (a[0] as { date: string }).date.localeCompare((b[0] as { date: string }).date));
   return [
     {
       name: 'Phần chia',
@@ -57,6 +70,12 @@ export function exportSheets(ix: Index, range: { from: string; to: string } | nu
       header: ['Ngày', 'Danh mục', 'Danh mục con', 'Số tiền', 'Người cho', 'Ghi chú'],
       rows: incRows,
       widths: [12, 16, 16, 14, 16, 28],
+    },
+    {
+      name: 'Công nợ',
+      header: ['Ngày', 'Người', 'Chiều', 'Nội dung', 'Số tiền (+ phát sinh / − trả)', 'Còn lại'],
+      rows: debtRows,
+      widths: [12, 16, 12, 36, 18, 14],
     },
   ];
 }

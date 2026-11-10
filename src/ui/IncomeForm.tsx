@@ -4,9 +4,9 @@ import { addPerson } from '../domain/catalog';
 import { saveIncome, updateIncome } from '../domain/income';
 import { today } from '../domain/period';
 import { parseAmount } from '../domain/split';
-import { rootOf, type Index } from '../domain/stats';
+import { owedTo, rootOf, type Index } from '../domain/stats';
 import { money, useMask, useRun } from './format';
-import { Avatar } from './kit';
+import { Avatar, Segmented, Switch } from './kit';
 import { CategoryPicker } from './pickers';
 
 const toText = (n: number) => (n ? n.toLocaleString('vi-VN') : '');
@@ -27,10 +27,19 @@ export default function IncomeForm({ ix, src, edit, onDone, header }: {
   const [newName, setNewName] = useState('');
   const [saving, setSaving] = useState(false);
   const amount = parseAmount(amountText);
+  // UC-16: dùng luôn một phần thu nhập để trả nợ (chỉ khi ghi mới).
+  const creditors = edit ? [] : ix.people.map((p) => ({ p, owed: owedTo(ix, p.id) })).filter((x) => x.owed > 0);
+  const [repayOn, setRepayOn] = useState(false);
+  const [repayTo, setRepayTo] = useState(creditors[0]?.p.id ?? '');
+  const [repayText, setRepayText] = useState('');
+  const [repayMode, setRepayMode] = useState<'hold' | 'transfer'>('hold');
+  const owedSel = creditors.find((c) => c.p.id === repayTo)?.owed ?? 0;
+  const repayAmt = repayOn ? (repayText.trim() ? parseAmount(repayText) : Math.min(owedSel, amount)) : 0;
+  const repayBad = repayOn && (repayAmt <= 0 || repayAmt > owedSel || repayAmt > amount);
   /** Phần “cho luôn” của một lần nhận: số tiền và người cho gắn với lần nhận đó, không sửa ở đây. */
   const linked = !!(edit && src?.settlementId);
   const people = ix.people.filter((p) => !p.archived || p.id === personId);
-  const canSave = amount > 0 && !!rootId && !saving;
+  const canSave = amount > 0 && !!rootId && !saving && !repayBad;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -39,7 +48,8 @@ export default function IncomeForm({ ix, src, edit, onDone, header }: {
     const input = { date, categoryId: subId || rootId, amount, title, personId };
     const ok = edit && src
       ? await run(() => updateIncome(db, src.id, input), 'Đã lưu thay đổi')
-      : await run(() => saveIncome(db, input), `Đã ghi thu nhập ${mask(money(amount))}`);
+      : await run(() => saveIncome(db, input, repayOn ? { personId: repayTo, amount: repayAmt, mode: repayMode } : undefined),
+        `Đã ghi thu nhập ${mask(money(amount))}${repayOn ? ` · trả nợ ${money(repayAmt)}` : ''}`);
     setSaving(false);
     if (ok) onDone();
   };
@@ -86,6 +96,43 @@ export default function IncomeForm({ ix, src, edit, onDone, header }: {
           <button type="button" className="btn" onClick={addNew} disabled={!newName.trim()}>Thêm</button>
         </div>
       </div>}
+      {creditors.length > 0 && (
+        <div className="card stack tight" style={{ padding: 14 }}>
+          <div className="setting" style={{ borderTop: 0, padding: 0 }}>
+            <div className="grow stack tight">
+              <span className="strong small">Dùng để trả nợ</span>
+              <span className="xs muted">Tính là tiền ra (dòng “Trả nợ”) — “Còn lại” và Số dư của tôi giảm theo.</span>
+            </div>
+            <Switch label="Dùng để trả nợ" checked={repayOn} onChange={setRepayOn} />
+          </div>
+          {repayOn && (
+            <>
+              <div className="chips" role="group" aria-label="Trả nợ cho ai">
+                {creditors.map(({ p, owed }) => (
+                  <button type="button" key={p.id} className="chip sm" aria-pressed={repayTo === p.id} onClick={() => { setRepayTo(p.id); setRepayText(''); }}>
+                    <Avatar person={p} size={22} />{p.name} · nợ {money(owed)}
+                  </button>
+                ))}
+              </div>
+              <div className="field">
+                <label htmlFor="inc-repay">Số tiền trả</label>
+                <input id="inc-repay" className="input" inputMode="decimal" placeholder={toText(Math.min(owedSel, amount)) || 'Trả hết'}
+                  value={repayText} onChange={(e) => setRepayText(e.target.value)} onBlur={() => repayAmt > 0 && setRepayText(toText(repayAmt))} />
+              </div>
+              <Segmented label="Cách trả" value={repayMode} onChange={setRepayMode}
+                options={[['hold', 'Giữ lại cho họ'], ['transfer', 'Chuyển khoản trả']]} />
+              <span className="xs muted">
+                {repayMode === 'hold'
+                  ? 'Tiền vẫn nằm trong tài khoản của bạn nhưng thành tiền đang giữ của họ (sau này chi hộ sẽ trừ vào đây).'
+                  : 'Bạn chuyển khoản trả luôn: số dư tài khoản giảm.'}
+              </span>
+              {repayAmt > owedSel && <span className="small c-give">Chỉ đang nợ {money(owedSel)}.</span>}
+              {repayAmt > amount && amount > 0 && <span className="small c-give">Số trả vượt khoản thu nhập.</span>}
+              {!repayBad && <span className="small">Sau khi lưu: còn nợ <b>{money(owedSel - repayAmt)}</b></span>}
+            </>
+          )}
+        </div>
+      )}
       <div className="row" style={{ justifyContent: 'flex-end' }}>
         <button type="button" className="btn" onClick={onDone}>Hủy</button>
         <button type="submit" className="btn primary" disabled={!canSave}>{edit ? 'Lưu' : 'Lưu thu nhập'}</button>

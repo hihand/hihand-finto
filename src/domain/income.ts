@@ -1,5 +1,6 @@
 import { base, now, type FintoDB } from '../db/schema';
-import { assertDate, creditOf } from './ledger';
+import { writeRepay } from './debt';
+import { assertDate, assertPayablesOk, creditOf } from './ledger';
 
 export interface IncomeInput { date: string; categoryId: string; amount: number; title: string; personId: string | null }
 
@@ -10,12 +11,30 @@ async function check(db: FintoDB, input: IncomeInput) {
   if (!c || c.deletedAt || c.kind !== 'income') throw new Error('Cần chọn danh mục thu nhập');
 }
 
-/** BR-20: ghi một khoản thu nhập (lương, thưởng, được cho…). */
-export async function saveIncome(db: FintoDB, input: IncomeInput) {
+/** UC-16: dùng một phần thu nhập để trả nợ một người. */
+export interface IncomeRepay { personId: string; amount: number; mode?: 'hold' | 'transfer' }
+
+const TABLES = (db: FintoDB) => [db.incomes, db.settlements, db.allocations, db.payables, db.repayments];
+
+/** Tổng đã dùng để trả nợ từ một khoản thu nhập. */
+async function repaidFrom(db: FintoDB, incomeId: string) {
+  return (await db.repayments.where('incomeId').equals(incomeId).toArray()).filter((r) => !r.deletedAt).reduce((s, r) => s + r.amount, 0);
+}
+
+/** BR-20: ghi một khoản thu nhập (lương, thưởng, được cho…); có thể dùng luôn một phần để trả nợ (UC-16). */
+export async function saveIncome(db: FintoDB, input: IncomeInput, repay?: IncomeRepay) {
   await check(db, input);
   const row = { ...base(), ...input, title: input.title.trim(), amount: Math.round(input.amount) };
-  await db.incomes.add(row);
-  return row.id;
+  if (!repay || !(repay.amount > 0)) {
+    await db.incomes.add(row);
+    return row.id;
+  }
+  if (repay.amount > row.amount) throw new Error('Số trả nợ vượt khoản thu nhập');
+  return db.transaction('rw', TABLES(db), async () => {
+    await db.incomes.add(row);
+    await writeRepay(db, { personId: repay.personId, date: row.date, amount: repay.amount, mode: repay.mode ?? 'hold', incomeId: row.id });
+    return row.id;
+  });
 }
 
 /** Thu nhập không có phần chia nên sửa được mọi trường. */
@@ -27,7 +46,13 @@ export async function updateIncome(db: FintoDB, id: string, input: IncomeInput) 
   if (cur.settlementId && (Math.round(input.amount) !== cur.amount || input.personId !== cur.personId)) {
     throw new Error('Khoản này là phần cho luôn của một lần nhận tiền; muốn đổi số tiền hãy xóa lần nhận và ghi lại');
   }
+  const used = await repaidFrom(db, id);
+  if (used > Math.round(input.amount)) throw new Error(`Khoản này đã dùng ${used.toLocaleString('vi-VN')}đ để trả nợ; không giảm thấp hơn được`);
   await db.incomes.update(id, { ...input, title: input.title.trim(), amount: Math.round(input.amount), updatedAt: now() });
+  // Lần trả nợ đi theo ngày của khoản thu.
+  if (used > 0 && input.date !== cur.date) {
+    for (const r of await db.repayments.where('incomeId').equals(id).toArray()) if (!r.deletedAt) await db.repayments.update(r.id, { date: input.date, updatedAt: now() });
+  }
 }
 
 /**
@@ -35,19 +60,25 @@ export async function updateIncome(db: FintoDB, id: string, input: IncomeInput) 
  * trả nó về lần nhận (thành tiền đang giữ của người đó), để số dư tài khoản không đổi.
  */
 export async function deleteIncome(db: FintoDB, id: string) {
-  return db.transaction('rw', [db.incomes, db.settlements], async () => {
+  return db.transaction('rw', TABLES(db), async () => {
     const r = await db.incomes.get(id);
     if (!r || r.deletedAt) throw new Error('Khoản thu không còn');
     const t = now();
     await db.incomes.update(id, { deletedAt: t, updatedAt: t });
     const st = r.settlementId ? await db.settlements.get(r.settlementId) : undefined;
     if (st && !st.deletedAt) await db.settlements.update(st.id, { amount: st.amount + r.amount, updatedAt: t });
+    // Lần trả nợ từ khoản thu này bị xóa theo (khoản nợ quay lại).
+    const reps = (await db.repayments.where('incomeId').equals(id).toArray()).filter((x) => !x.deletedAt);
+    for (const x of reps) await db.repayments.update(x.id, { deletedAt: t, updatedAt: t });
+    for (const pid of new Set(reps.map((x) => x.personId))) {
+      if ((await creditOf(db, pid)) < 0) throw new Error('Tiền trả nợ giữ lại từ khoản thu này đã được dùng; hãy xóa các khoản chi hộ / trả lại trước');
+    }
     return t;
   });
 }
 
 export async function restoreIncome(db: FintoDB, id: string, stamp: string) {
-  return db.transaction('rw', [db.incomes, db.settlements, db.allocations], async () => {
+  return db.transaction('rw', TABLES(db), async () => {
     const r = await db.incomes.get(id);
     if (!r || r.deletedAt !== stamp) return;
     const st = r.settlementId ? await db.settlements.get(r.settlementId) : undefined;
@@ -56,6 +87,9 @@ export async function restoreIncome(db: FintoDB, id: string, stamp: string) {
       await db.settlements.update(st.id, { amount: st.amount - r.amount, updatedAt: now() });
     } else if (r.settlementId) return; // lần nhận đã bị xóa: không khôi phục phần cho luôn
     await db.incomes.update(id, { deletedAt: null, updatedAt: now() });
+    const reps = (await db.repayments.where('incomeId').equals(id).toArray()).filter((x) => x.deletedAt === stamp);
+    for (const x of reps) await db.repayments.update(x.id, { deletedAt: null, updatedAt: now() });
+    for (const pid of new Set(reps.map((x) => x.personId))) await assertPayablesOk(db, pid);
   });
 }
 

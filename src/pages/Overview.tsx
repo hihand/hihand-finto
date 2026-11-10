@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { fmtDate, fmtDayMonth, monthLabel, periodOf, periodRange, today } from '../domain/period';
-import { balanceAt, creditOf, outstanding, periodStats, personalBalanceAt, type Index } from '../domain/stats';
+import { balanceAt, creditOf, debtSummary, outstanding, owedAt, periodStats, personalBalanceAt, repayTxs, type Index } from '../domain/stats';
 import { useIndex } from '../ui/data';
 import { Avatar, Empty, Icon, SplitBar } from '../ui/kit';
 import { money, short, txTitle, useMask, usePrivacy, useRun } from '../ui/format';
 import { downloadBackup } from '../ui/download';
 import { backupOverdueDays } from '../domain/monthEnd';
-import { IncomeRow, TxRow } from '../ui/tx';
+import { IncomeRow, RepayRow, TxRow } from '../ui/tx';
 
 const holdingSum = (ix: Index) => ix.people.reduce((a, p) => a + creditOf(ix, p.id), 0);
 
@@ -30,12 +30,15 @@ export default function Overview() {
   const maxCat = Math.max(1, ...st.byCategory.map((c) => c.amount));
   const recent = [
     ...ix.txs.slice(0, 8).map((t) => ({ key: t.id, date: t.date, created: t.createdAt, el: <TxRow key={t.id} ix={ix} tx={t} compact /> })),
+    ...repayTxs(ix).slice(0, 8).map((r) => ({ key: r.key, date: r.date, created: r.createdAt, el: <RepayRow key={r.key} ix={ix} rp={r} compact /> })),
     ...ix.incomes.filter((r) => !r.settlementId).slice(0, 8).map((r) => ({ key: r.id, date: r.date, created: r.createdAt, el: <IncomeRow key={r.id} ix={ix} income={r} compact /> })),
   ].sort((a, b) => b.date.localeCompare(a.date) || b.created.localeCompare(a.created)).slice(0, 8);
   const balance = balanceAt(ix);
   const personal = personalBalanceAt(ix);
   const giveAll = st.give + st.forgiven;
   const totalHeld = holdingSum(ix);
+  const owed = owedAt(ix);
+  const iOweList = debtSummary(ix).filter((d) => d.iOwe > 0);
   const firstData = ix.txs.reduce<string | undefined>((a, t) => (!a || t.createdAt < a ? t.createdAt : a), undefined);
   const overdue = later ? 0 : backupOverdueDays(ix.snap.settings?.lastBackupAt, firstData);
 
@@ -91,6 +94,7 @@ export default function Overview() {
               <span className={`kpi-value c-mine ${personal < 0 ? 'c-give' : ''}`}>{mask(money(personal))}</span>
               <span className="kpi-sub">
                 {totalHeld > 0 ? `= tài khoản − ${short(totalHeld)} giữ hộ` : 'Không giữ hộ ai'}
+                {owed.inApp > 0 ? ` − ${short(owed.inApp)} đang vay` : ''}
                 {oweTotal > 0 ? ` · đang đòi lại ${short(oweTotal)} sẽ về` : ''}
               </span>
             </>
@@ -104,7 +108,9 @@ export default function Overview() {
         <div className="card stack tight">
           <span className="kpi-label">Còn lại tháng này</span>
           <span className={`kpi-value ${st.net < 0 ? 'c-give' : ''}`}>{mask(`${st.net < 0 ? '−' : '+'}${money(Math.abs(st.net))}`)}</span>
-          <span className="kpi-sub">Thu nhập − chi tiêu của tôi · không tính ứng trước, chi hộ</span>
+          <span className="kpi-sub">
+            Thu nhập − chi tiêu của tôi{st.repaidOld ? ` − trả nợ ${mask(short(st.repaidOld))}` : ''} · không tính ứng trước, chi hộ
+          </span>
         </div>
       </div>
 
@@ -207,6 +213,28 @@ export default function Overview() {
                 );
               })}
             </div>
+          </section>
+
+          <section className="card stack">
+            <div className="row between"><h2>Tôi đang nợ</h2><span className="num c-give">{mask(money(owed.total))}</span></div>
+            {iOweList.length === 0 && <Empty>Bạn không nợ ai.</Empty>}
+            <div className="list">
+              {iOweList.map((d) => {
+                const p = ix.person.get(d.personId);
+                return (
+                  <div className="item" key={d.personId}>
+                    <Avatar person={p} />
+                    <span className="grow stack tight">
+                      <span className="title">{p?.name}</span>
+                      {d.theyOwe > 0 && <span className="meta">{p?.name} cũng nợ bạn {mask(short(d.theyOwe))} · có thể cấn trừ</span>}
+                    </span>
+                    <span className="num">{mask(money(d.iOwe))}</span>
+                    <Link to="/moi-nguoi" className="btn sm">Trả</Link>
+                  </div>
+                );
+              })}
+            </div>
+            {st.repaid > 0 && <span className="small muted">Tháng này đã trả {mask(money(st.repaid))}</span>}
           </section>
 
           {holding.length > 0 && (

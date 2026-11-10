@@ -16,9 +16,11 @@ describe('sao lưu / khôi phục (BR-15)', () => {
     await expect(importBackup(JSON.stringify({ ...good, tables: { ...good.tables, people: [{ name: 'không id' }] } }))).rejects.toThrow();
     await expect(importBackup('không phải json')).rejects.toThrow();
     expect(await db.people.count()).toBe(1);
-    // file hợp lệ (kể cả bản cũ chưa có bảng incomes) vẫn khôi phục được
+    // file hợp lệ (kể cả bản cũ chưa có bảng incomes / công nợ) vẫn khôi phục được
     const old = { ...good, tables: { ...good.tables } };
     delete old.tables.incomes;
+    delete old.tables.payables;
+    delete old.tables.repayments;
     await importBackup(JSON.stringify(old));
     expect(await db.people.count()).toBe(1);
   });
