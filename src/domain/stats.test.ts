@@ -42,7 +42,7 @@ const lau = async (date = '2026-11-06') => {
 };
 
 describe('period (RULE-11)', () => {
-  it('kỳ theo ngày bắt đầu tháng', () => {
+  it('period by month start day', () => {
     expect(periodRange('2026-11', 1)).toEqual({ from: '2026-11-01', to: '2026-12-01' });
     expect(periodRange('2026-12', 10)).toEqual({ from: '2026-12-10', to: '2027-01-10' });
     expect(periodOf('2026-11-05', 10)).toBe('2026-10');
@@ -52,7 +52,7 @@ describe('period (RULE-11)', () => {
 });
 
 describe('stats', () => {
-  it('UC-01/UC-07: thống kê tháng chỉ cộng phần Của tôi, chia danh mục → danh mục con', async () => {
+  it('UC-01/UC-07: monthly stats only add Mine, category → subcategory', async () => {
     await lau();
     const ix = makeIndex(await snap());
     const st = periodStats(ix, periodRange('2026-11'));
@@ -64,7 +64,7 @@ describe('stats', () => {
     expect(periodStats(ix, periodRange('2026-10')).total).toBe(0);
   });
 
-  it('UC-05: chuyển tiền cho em trai không tính vào Chi của tôi', async () => {
+  it('UC-05: a transfer to my younger brother is not my spending', async () => {
     await saveExpense(db, {
       date: '2026-11-01', kind: 'transfer', categoryId: await cat('Gia đình'), title: 'Tiêu vặt', totalAmount: 500000, splitMode: 'equal', tagIds: [],
       shares: [{ personId: P.tuan, type: 'give', amount: 500000 }],
@@ -73,20 +73,20 @@ describe('stats', () => {
     expect(st).toMatchObject({ total: 500000, mine: 0, give: 500000 });
   });
 
-  it('RULE-02: tắt "Tính vào Chi của tôi" thì phần Của tôi không cộng', async () => {
+  it('RULE-02: turning off "Counts as my spending" excludes Mine', async () => {
     await lau();
     await setCountsAsMine(db, await cat('Ăn uống'), false);
     expect(periodStats(makeIndex(await snap()), periodRange('2026-11')).mine).toBe(0);
   });
 
-  it('UC-02/03 + BR-13: nhãn trạng thái và đang đòi lại', async () => {
+  it('UC-02/03 + BR-13: status labels and outstanding', async () => {
     await lau('2026-11-01');
     await lau('2026-11-06');
     await receivePayment(db, { personId: P.an, date: '2026-11-07', amount: 130000, picks: [] });
     let ix = makeIndex(await snap());
     const debts = openDebts(ix, P.an);
     expect(debts.map((d) => d.tx.date)).toEqual(['2026-11-01', '2026-11-06']);
-    // Lần nhận thứ hai 10k: 130k đang giữ + 10k đủ trừ 90k + 40k (khoản thứ hai trừ một phần)
+    // Second payment 10k: 130k held + 10k covers 90k + 40k (the second item partly applied)
     await receivePayment(db, { personId: P.an, date: '2026-11-08', amount: 10000, picks: [{ shareId: debts[0].share.id, amount: 90000 }, { shareId: debts[1].share.id, amount: 40000 }] });
     ix = makeIndex(await snap());
     const an = peopleSummary(ix, 'owe').find((p) => p.personId === P.an)!;
@@ -98,7 +98,7 @@ describe('stats', () => {
     expect(statusOf(ix, debts[1].share)).toBe('partial');
   });
 
-  it('UC-08: tổng đã cho một người từ trước tới nay', async () => {
+  it('UC-08: total given to one person over time', async () => {
     await lau('2026-09-01');
     await lau('2026-11-06');
     const chi = peopleSummary(makeIndex(await snap()), 'give').find((p) => p.personId === P.chi)!;
@@ -106,7 +106,7 @@ describe('stats', () => {
     expect(chi.entries).toHaveLength(2);
   });
 
-  it('tìm không phân biệt dấu theo tag, người, danh mục', async () => {
+  it('accent-insensitive search by tag, person, category', async () => {
     await lau();
     const ix = makeIndex(await snap());
     const t = ix.txs[0];
@@ -117,8 +117,8 @@ describe('stats', () => {
   });
 });
 
-describe('tiền đang giữ', () => {
-  it('trừ khoản cũ vào tiền đang giữ mà không cần lần nhận mới', async () => {
+describe('held money', () => {
+  it('apply old items against held money without a new payment', async () => {
     await lau();
     await receivePayment(db, { personId: P.binh, date: '2026-11-07', amount: 500000, picks: [] });
     let ix = makeIndex(await snap());
@@ -131,8 +131,8 @@ describe('tiền đang giữ', () => {
   });
 });
 
-describe('sửa / xóa / hoàn tác', () => {
-  it('RULE-09: sửa ngày, danh mục, tag; số tiền giữ nguyên', async () => {
+describe('edit / delete / undo', () => {
+  it('RULE-09: edit date, category, tags; amount unchanged', async () => {
     const id = await lau();
     const tagId = await addTagToCategory(db, await cat('Ăn uống'), 'ăn khuya');
     await updateTransactionMeta(db, id, { date: '2026-11-07', categoryId: await cat('Bữa chính'), title: 'Lẩu tối', tagIds: [tagId] });
@@ -142,7 +142,7 @@ describe('sửa / xóa / hoàn tác', () => {
     expect(ix.tagIdsOfTx.get(id)).toEqual([tagId]);
   });
 
-  it('BR-11: hoàn tác xóa khôi phục cả khoản tự trừ', async () => {
+  it('BR-11: undo delete also restores auto-applied rows', async () => {
     await receivePayment(db, { personId: P.binh, date: '2026-11-01', amount: 500000, picks: [] });
     const id = await lau();
     const stamp = await deleteTransaction(db, id);
@@ -154,7 +154,7 @@ describe('sửa / xóa / hoàn tác', () => {
     expect(outstanding(ix).find((o) => o.personId === P.binh)).toBeUndefined();
   });
 
-  it('danh mục con mới kế thừa cờ của danh mục chính', async () => {
+  it('a new subcategory inherits the parent flags', async () => {
     const id = await addCategory(db, 'Biếu bố mẹ', await cat('Chuyển tiền'));
     expect((await db.categories.get(id))!.countsAsMine).toBe(false);
     await expect(addCategory(db, 'Biếu bố mẹ', await cat('Chuyển tiền'))).rejects.toThrow();

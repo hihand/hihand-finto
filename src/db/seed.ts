@@ -1,9 +1,9 @@
 import { base, type FintoDB, type Category, type Tag, type CategoryTag } from './schema';
 
-/** Danh mục con của Chuyển tiền cho khoản chi hộ là chuyển tiền thanh toán thay người khác (UC-12). */
+/** Subcategory of Chuyển tiền (transfers) for on-behalf payments that are transfers to someone else (UC-12). */
 export const PAY_FOR = 'Thanh toán hộ';
 
-/** Danh mục, danh mục con và tag mặc định (theo mục "Dữ liệu mặc định" trong tài liệu). */
+/** Default categories, subcategories and tags (per the "Default data" section of the spec). */
 const DEFAULTS: { name: string; icon: string; countsAsMine?: boolean; children: string[]; tags: string[] }[] = [
   { name: 'Ăn uống', icon: 'utensils', children: ['Bữa chính', 'Cà phê & trà sữa', 'Ăn vặt', 'Lẩu/nướng/nhà hàng'], tags: ['đi chơi', 'bạn bè', 'người yêu', 'gia đình', 'ăn hằng ngày'] },
   { name: 'Di chuyển', icon: 'bike', children: ['Xăng', 'Grab/taxi', 'Gửi xe', 'Sửa xe'], tags: ['đi chơi', 'đi làm'] },
@@ -22,7 +22,7 @@ export async function seedIfEmpty(db: FintoDB) {
   await seedPayFor(db);
 }
 
-/** Thêm "Chuyển tiền › Thanh toán hộ" một lần cho sổ cũ (sổ mới đã có trong DEFAULTS). */
+/** Add "Chuyển tiền › Thanh toán hộ" once to old ledgers (new ledgers get it from DEFAULTS). */
 export async function seedPayFor(db: FintoDB) {
   await db.transaction('rw', [db.settings, db.categories], async () => {
     const s = await db.settings.get('settings');
@@ -37,7 +37,7 @@ export async function seedPayFor(db: FintoDB) {
   });
 }
 
-/** Danh mục Hóa đơn (UC-12: trả hóa đơn hộ người khác), thêm một lần cho cả sổ cũ. */
+/** Bills category (UC-12: paying bills on behalf of others), added once, including to old ledgers. */
 export async function seedBills(db: FintoDB) {
   await db.transaction('rw', [db.settings, db.categories], async () => {
     const s = await db.settings.get('settings');
@@ -83,7 +83,7 @@ async function seedExpense(db: FintoDB) {
   });
 }
 
-/** Danh mục thu mặc định. */
+/** Default income categories. */
 const INCOME_DEFAULTS: { name: string; icon: string; children: string[] }[] = [
   { name: 'Lương', icon: 'wallet', children: [] },
   { name: 'Thưởng', icon: 'sparkles', children: ['Tết', 'KPI', 'Tháng 13'] },
@@ -93,7 +93,7 @@ const INCOME_DEFAULTS: { name: string; icon: string; children: string[] }[] = [
   { name: 'Khác', icon: 'dots', children: [] },
 ];
 
-/** Tạo danh mục thu một lần (cả cho sổ mới lẫn sổ cũ nâng cấp từ bản không có thu nhập). */
+/** Create the income categories once (for new ledgers and for old ones upgraded from a version without incomes). */
 export async function seedIncomeCategories(db: FintoDB) {
   await db.transaction('rw', [db.settings, db.categories], async () => {
     const s = await db.settings.get('settings');

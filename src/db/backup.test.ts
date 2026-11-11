@@ -4,8 +4,8 @@ import { exportBackup, importBackup } from './backup';
 import { base, db } from './schema';
 import { seedIfEmpty } from './seed';
 
-describe('sao lưu / khôi phục (BR-15)', () => {
-  it('file thiếu bảng hoặc sai kiểu bị từ chối và dữ liệu hiện có giữ nguyên', async () => {
+describe('backup / restore (BR-15)', () => {
+  it('a file with a missing table or wrong types is rejected and existing data is kept', async () => {
     await seedIfEmpty(db);
     await db.people.add({ ...base(), name: 'An', color: '#fff', defaultType: 'owe' });
     const good = JSON.parse(await (await exportBackup()).text());
@@ -16,7 +16,7 @@ describe('sao lưu / khôi phục (BR-15)', () => {
     await expect(importBackup(JSON.stringify({ ...good, tables: { ...good.tables, people: [{ name: 'không id' }] } }))).rejects.toThrow();
     await expect(importBackup('không phải json')).rejects.toThrow();
     expect(await db.people.count()).toBe(1);
-    // file hợp lệ (kể cả bản cũ chưa có bảng incomes / công nợ) vẫn khôi phục được
+    // a valid file (including old ones without the incomes / debt tables) still restores
     const old = { ...good, tables: { ...good.tables } };
     delete old.tables.incomes;
     delete old.tables.payables;

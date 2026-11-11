@@ -11,9 +11,9 @@ import { STATUS_LABEL, money, short, txTitle, useRun, useToast, useMask } from '
 
 export function TxPills({ ix, tx }: { ix: Index; tx: Transaction }) {
   const t = txTotals(ix, tx);
-  // Phần Đòi lại đã trả bằng tiền đang giữ (chi hộ / tự trừ) không phải ứng trước.
+  // Owed parts paid with held money (on behalf / auto-apply) are not advances.
   const covered = (ix.sharesOfTx.get(tx.id) ?? []).filter((x) => x.type === 'owe').reduce((a, x) => a + Math.min(x.amount, ix.heldCover.get(x.id) ?? 0), 0);
-  // Phần cấn trừ với khoản tôi nợ người đó (UC-17): là trả nợ, không phải ứng trước.
+  // Parts offset against what I owe that person (UC-17): a repayment, not an advance.
   const offset = (ix.sharesOfTx.get(tx.id) ?? []).filter((x) => x.type === 'owe').reduce((a, x) => a + (ix.offsetCover.get(x.id) ?? 0), 0);
   return (
     <span className="row" style={{ gap: 4 }}>
@@ -74,7 +74,7 @@ export function TxRow({ ix, tx, onEdit, compact }: { ix: Index; tx: Transaction;
               <div className="line" key={s.id}>
                 <Avatar person={p} size={28} />
                 <span className="grow">{p ? p.name : 'Phần của tôi'}</span>
-                {/* Cấn trừ hết với khoản tôi nợ người đó → phần này là trả nợ, không phải Đòi lại. */}
+                {/* Fully offset against what I owe that person → this part is a repayment, not Owed. */}
                 {s.type === 'owe' && (ix.offsetCover.get(s.id) ?? 0) >= s.amount
                   ? <Pill kind="give">Trả nợ (cấn trừ)</Pill>
                   : <Pill kind={s.type}>{s.type === 'mine' ? 'Của tôi' : s.type === 'owe' ? 'Đòi lại' : 'Cho'}</Pill>}
@@ -97,7 +97,7 @@ export function TxRow({ ix, tx, onEdit, compact }: { ix: Index; tx: Transaction;
   );
 }
 
-/** Một lần nhận tiền (kèm phần cho luôn / bỏ qua) hoặc một lần trả lại tiền giữ (UC-13). */
+/** A payment received (with gifted / forgiven parts) or a held-money return (UC-13). */
 export function SettlementRow({ ix, st }: { ix: Index; st: Settlement }) {
   const [open, setOpen] = useState(false);
   const run = useRun();
@@ -153,7 +153,7 @@ export function SettlementRow({ ix, st }: { ix: Index; st: Settlement }) {
   );
 }
 
-/** Một dòng thu nhập (BR-20): sửa được mọi trường, xóa có hoàn tác. */
+/** An income row (BR-20): every field editable, delete with undo. */
 export function IncomeRow({ ix, income, onEdit, compact }: { ix: Index; income: Income; onEdit?: (r: Income) => void; compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const nav = useNavigate();
@@ -193,7 +193,7 @@ export function IncomeRow({ ix, income, onEdit, compact }: { ix: Index; income: 
   );
 }
 
-/** Một lần trả nợ bằng tiền (UC-16): tính là một giao dịch tiền ra. Xóa có hoàn tác (khoản nợ quay lại). */
+/** A repayment with money (UC-16): counted as one money-out transaction. Delete with undo (the debt comes back). */
 export function RepayRow({ ix, rp, compact }: { ix: Index; rp: RepayTx; compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const run = useRun();

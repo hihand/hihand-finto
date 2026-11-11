@@ -5,7 +5,7 @@ import { fmtDate, inRange, monthLabel, periodOf, periodRange, shiftMonth, today,
 import { categoryPath, fold, repayTxs, rootOf, txMatches, type RepayTx } from '../domain/stats';
 import { useIndex } from '../ui/data';
 import EditTx from '../ui/EditTx';
-// Xuất Excel (kèm thư viện nén) chỉ tải khi mở hộp thoại, để bản chính nhẹ hơn.
+// Excel export (with the zip library) is only loaded when the dialog opens, to keep the main bundle small.
 const ExportDialog = lazy(() => import('../ui/ExportDialog'));
 import { Empty, Icon, Modal } from '../ui/kit';
 import { money, short, useMask } from '../ui/format';
@@ -45,7 +45,7 @@ export default function Transactions() {
     ? ix.settlements.filter((s) => !s.opening && scope(s.date) && (!q || fold(`${ix.person.get(s.personId)?.name ?? ''} ${s.note ?? ''}`).includes(fold(q))))
     : [];
 
-  // Trả nợ bằng tiền (giữ lại / chuyển khoản) là một giao dịch tiền ra.
+  // Repayments with money (hold / transfer) are money-out transactions.
   const rps = (kind === 'all' || kind === 'repay') && cat === 'all'
     ? repayTxs(ix).filter((r) => scope(r.date) && (!q || fold(`tra no ${ix.person.get(r.personId)?.name ?? ''} ${r.note ?? ''}`).includes(fold(q))))
     : [];
@@ -54,7 +54,7 @@ export default function Transactions() {
     ...rps.map((r) => ({ date: r.date, created: r.createdAt, rp: r })),
     ...txs.map((t) => ({ date: t.date, created: t.createdAt, tx: t })),
     ...sts.map((s) => ({ date: s.date, created: s.createdAt, st: s })),
-    // Phần "cho luôn" gắn với lần nhận hiện trong dòng lần nhận đó, trừ khi đang lọc riêng Thu nhập.
+    // A gifted surplus tied to a payment shows inside that payment's row, unless filtering Income only.
     ...incs.filter((r) => kind === 'income' || !r.settlementId).map((r) => ({ date: r.date, created: r.createdAt, inc: r })),
   ].sort((a, b) => b.date.localeCompare(a.date) || b.created.localeCompare(a.created));
   const days = new Map<string, Row[]>();
@@ -65,7 +65,7 @@ export default function Transactions() {
   const outSum = sts.filter((s) => s.direction === 'out').reduce((a, s) => a + s.amount, 0);
   const incSum = incs.reduce((a, r) => a + r.amount, 0);
   const repaySum = rps.reduce((a, r) => a + r.amount, 0);
-  // RULE-14: chi tiêu thực của tôi = Của tôi + Cho đi; ứng trước = phần Đòi lại chưa có tiền giữ bù.
+  // RULE-14: my real spending = Mine + Given; advances = Owed not yet covered by held money.
   let spent = 0, advanced = 0;
   for (const t of txs) {
     for (const sh of ix.sharesOfTx.get(t.id) ?? []) {
@@ -73,8 +73,8 @@ export default function Transactions() {
       else spent += sh.amount;
     }
   }
-  // Trả khoản nợ đầu kỳ tính vào "Còn lại" (giống Tổng quan / Thống kê); nợ phát sinh trong app thì không.
-  // Gồm cả phần cấn trừ trong các khoản chi hộ / chia bill đang hiện (cấn trừ = trả nợ).
+  // Repaying opening debts counts in "Left over" (same as Overview / Stats); in-app debts do not.
+  // Includes offsets inside the on-behalf / split transactions shown (offset = repayment).
   const isOld = (payableId?: string) => ix.payableById.get(payableId ?? '')?.origin === 'opening';
   const shown = new Set(txs.flatMap((t) => (ix.sharesOfTx.get(t.id) ?? []).map((sh) => sh.id)));
   const repaidOld = rps.flatMap((r) => r.ids).reduce((a, id) => {
@@ -102,7 +102,7 @@ export default function Transactions() {
           </div>
           <button type="button" className="chip" aria-pressed={all} onClick={() => setAll(!all)}>Mọi tháng</button>
           <button type="button" className="btn" onClick={() => setExporting(true)}>Xuất Excel</button>
-          <Link to="/them" className="btn primary"><Icon name="plus" size={18} stroke={2.5} />Thêm chi tiêu</Link>
+          <Link to="/them" className="btn primary hide-sm"><Icon name="plus" size={18} stroke={2.5} />Thêm chi tiêu</Link>
         </div>
       </div>
 

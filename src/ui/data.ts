@@ -3,7 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/schema';
 import { makeIndex, type Index, type Snapshot } from '../domain/stats';
 
-/** Đọc toàn bộ sổ (dữ liệu cá nhân nhỏ) và tự cập nhật khi IndexedDB đổi. */
+/** Read the whole ledger (small personal data) and update automatically when IndexedDB changes. */
 export function useIndex(): Index | undefined {
   const snap = useLiveQuery<Snapshot>(async () => {
     const [people, categories, tags, categoryTags, transactions, transactionTags, shares, settlements, allocations, groups, groupMembers, monthNotes, incomes, payables, repayments, settings] = await Promise.all([

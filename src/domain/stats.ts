@@ -3,7 +3,7 @@ import type {
 } from '../db/schema';
 import { inRange, periodRange, shiftMonth } from './period';
 
-/** Toàn bộ dữ liệu đọc một lần từ IndexedDB; mọi con số được tính từ đây (không lưu số suy ra). */
+/** All data read once from IndexedDB; every number is computed from here (derived numbers are never stored). */
 export interface Snapshot {
   people: Person[];
   categories: Category[];
@@ -35,52 +35,52 @@ export type DebtStatus = 'paid' | 'partial' | 'open';
 
 export interface Index {
   snap: Snapshot;
-  /** Tra cứu kể cả bản ghi đã xóa, để giao dịch cũ vẫn hiện đúng tên (BR-14). */
+  /** Lookup including deleted records, so old transactions still show the right names (BR-14). */
   person: Map<string, Person>;
   category: Map<string, Category>;
   tag: Map<string, Tag>;
-  /** Chỉ bản ghi còn sống. */
+  /** Live records only. */
   people: Person[];
-  /** Danh mục chi chính. */
+  /** Top-level expense categories. */
   roots: Category[];
-  /** Danh mục thu chính. */
+  /** Top-level income categories. */
   incomeRoots: Category[];
   incomes: Income[];
   childrenOf: Map<string, Category[]>;
   tagsOfCategory: Map<string, Tag[]>;
-  /** Giao dịch thật (không gồm số đầu kỳ) — dùng cho thống kê, danh sách, số dư. */
+  /** Real transactions (without opening amounts) — for stats, lists, balances. */
   txs: Transaction[];
-  /** Kể cả giao dịch số đầu kỳ "Họ đang nợ tôi" — dùng cho công nợ. */
+  /** Including the opening "They owe me" transactions — for debts. */
   allTxs: Transaction[];
   tx: Map<string, Transaction>;
   sharesOfTx: Map<string, Share[]>;
   tagIdsOfTx: Map<string, string[]>;
   settlements: Settlement[];
   allocsOfSettlement: Map<string, Allocation[]>;
-  /** Phần bỏ qua (UC-10), còn sống, kèm khoản và giao dịch gốc. */
+  /** Forgiven rows (UC-10), live, with their share and source transaction. */
   forgiven: { alloc: Allocation; share: Share; tx: Transaction; date: string }[];
-  /** Thu nhập gắn với lần nhận tiền (phần cho luôn, UC-09). */
+  /** Incomes tied to a payment (gifted surplus, UC-09). */
   giftsOfSettlement: Map<string, Income[]>;
   paid: Map<string, number>;
   credit: Map<string, number>;
-  /** Phần của mỗi khoản Đòi lại đã trả bằng tiền đang giữ (chi hộ / tự trừ), không phải tiền thật của tôi bỏ ra. */
+  /** Part of each Owed item paid with held money (on-behalf / auto-apply), not my own money. */
   heldCover: Map<string, number>;
-  /** Phần của mỗi khoản Đòi lại đã cấn trừ với khoản tôi nợ người đó. */
+  /** Part of each Owed item offset against what I owe that person. */
   offsetCover: Map<string, number>;
-  /** Khoản tôi nợ (còn sống), cũ nhất trước. */
+  /** What I owe (live), oldest first. */
   payables: Payable[];
   payableById: Map<string, Payable>;
-  /** Đã trả / xóa nợ / cấn trừ trên mỗi khoản tôi nợ. */
+  /** Repaid / waived / offset per payable. */
   payableUsed: Map<string, number>;
   repayments: Repayment[];
-  /** Các dòng cấn trừ (còn sống). */
+  /** Offset rows (live). */
   offsets: Allocation[];
-  /** Tra cứu nhanh (tránh .find lặp với 10.000 giao dịch — NFR-01). */
+  /** Fast lookups (avoid repeated .find with 10,000 transactions — NFR-01). */
   shareById: Map<string, Share>;
   settlementById: Map<string, Settlement>;
   forgivenByShare: Map<string, number>;
   groups: { group: Group; memberIds: string[] }[];
-  /** Ghi chú tiền dư cuối tháng mới nhất của từng người. */
+  /** Latest month-end surplus note per person. */
   lastNote: Map<string, MonthNote>;
   startDay: number;
 }
@@ -188,7 +188,7 @@ export const rootOf = (ix: Index, categoryId: string): Category | undefined => {
   return c?.parentId ? ix.category.get(c.parentId) : c;
 };
 
-/** Đường dẫn "Mỹ phẩm › Sữa rửa mặt". */
+/** Path like "Mỹ phẩm › Sữa rửa mặt". */
 export function categoryPath(ix: Index, categoryId: string) {
   const c = ix.category.get(categoryId);
   if (!c) return '—';
@@ -196,12 +196,12 @@ export function categoryPath(ix: Index, categoryId: string) {
   return p ? `${p.name} › ${c.name}` : c.name;
 }
 
-/** RULE-02: phần Của tôi chỉ tính khi danh mục chính bật "Tính vào Chi của tôi". */
+/** RULE-02: Mine only counts when the top-level category has "Counts as my spending" on. */
 export const countsAsMine = (ix: Index, t: Transaction) => rootOf(ix, t.categoryId)?.countsAsMine ?? true;
 
 /**
- * Phần Đòi lại thật của một khoản: phần đã cấn trừ với khoản tôi nợ người đó là TRẢ NỢ (của tôi trả họ),
- * không phải họ nợ tôi, nên không tính là Đòi lại.
+ * The real Owed part of an item: the part offset against what I owe that person is a REPAYMENT (I pay them),
+ * not money they owe me, so it is not counted as Owed.
  */
 export const oweAmount = (ix: Index, share: Share) => Math.max(0, share.amount - (ix.offsetCover.get(share.id) ?? 0));
 
@@ -234,37 +234,37 @@ export interface PeriodStats {
   byTag: { tag: Tag; amount: number }[];
   giveByPerson: PersonGroup[];
   oweByPerson: PersonGroup[];
-  /** BR-20..22: thu nhập, tiền được trả lại, dòng tiền ròng = thu nhập + được trả lại − tổng tiền ra (RULE-14). */
+  /** BR-20..22: income, money paid back, net cash flow = income + paid back − total money out (RULE-14). */
   income: number;
   received: number;
   /**
-   * RULE-14: Còn lại = thu nhập − chi tiêu thực của tôi (spent).
-   * Không tính ứng trước (sẽ được trả lại) và chi hộ bằng tiền đang giữ (tiền của người khác).
+   * RULE-14: Left over = income − my real spending (spent).
+   * Advances (to be paid back) and on-behalf payments from held money (other people's money) are not counted.
    */
   net: number;
-  /** Chi tiêu thực của tôi = mọi phần Của tôi + Cho đi + phần bỏ qua: tiền mất đi thật. */
+  /** My real spending = all Mine + Given + forgiven: money really gone. */
   spent: number;
-  /** Ứng trước trong kỳ = phần Đòi lại chưa có tiền giữ bù (chi vượt tiền giữ, hoặc họ chưa gửi). */
+  /** Advances in the period = Owed not yet covered by held money (beyond held money, or nothing deposited yet). */
   advanced: number;
-  /** Tiền trả lại người khác từ tiền đang giữ (UC-13). */
+  /** Money returned to others from held money (UC-13). */
   returned: number;
-  /** Phần bỏ qua trong kỳ (UC-10) — tính là Cho đi nhưng không phải tiền ra trong kỳ. */
+  /** Forgiven in the period (UC-10) — counted as Given but not money out in the period. */
   forgiven: number;
-  /** Chi hộ người khác trong kỳ (UC-12) — nằm trong Tiền ra và Ứng trước. */
+  /** On-behalf payments in the period (UC-12) — part of Money out and Advances. */
   onBehalf: number;
   incomeByCategory: IncomeGroup[];
   /**
-   * Trả nợ trong kỳ (giữ lại + chuyển khoản + cấn trừ). Chỉ phần trả khoản nợ ĐẦU KỲ (repaidOld) trừ vào "Còn lại";
-   * khoản nợ phát sinh trong app thì tiền tiêu đã tính lúc chi nên không trừ lần nữa.
+   * Repayments in the period (hold + transfer + offset). Only repayments of OPENING debts (repaidOld) reduce "Left over";
+   * for debts created in the app the spending was already counted, so it is not deducted again.
    */
   repaid: number;
   repaidOld: number;
-  /** Được xóa nợ trong kỳ; phần nợ phát sinh trong app (waivedNew) tính như được cho (cộng vào "Còn lại"). */
+  /** Waived in the period; the in-app part (waivedNew) counts like a gift (added to "Left over"). */
   waived: number;
   waivedNew: number;
-  /** Bỏ qua khoản "Họ đang nợ tôi" đầu kỳ: vẫn là Cho đi nhưng không vào chi tiêu kỳ. */
+  /** Forgiving opening "They owe me" amounts: still Given, but not in the period's spending. */
   forgivenOld: number;
-  /** Vay mới trong kỳ (tiền vào, không phải thu nhập). */
+  /** New loans in the period (money in, not income). */
   borrowed: number;
 }
 
@@ -291,7 +291,7 @@ function groupIncomes(ix: Index, list: Income[]): IncomeGroup[] {
   return out;
 }
 
-/** Số liệu một kỳ (BR-10, BR-12). Tổng quan và Thống kê dùng chung hàm này nên luôn khớp nhau. */
+/** Numbers for one period (BR-10, BR-12). Overview and Stats share this function, so they always agree. */
 export function periodStats(ix: Index, range: { from: string; to: string }): PeriodStats {
   const txs = ix.txs.filter((t) => inRange(t.date, range));
   let total = 0, mine = 0, give = 0, owe = 0, mineAll = 0, advanced = 0;
@@ -325,11 +325,11 @@ export function periodStats(ix: Index, range: { from: string; to: string }): Per
         const m = s.type === 'give' ? giveBy : oweBy;
         if (s.type === 'give') give += s.amount;
         else {
-          // Phần cấn trừ là trả nợ (dòng "Trả nợ"), không phải Đòi lại.
+          // The offset part is a repayment ("Trả nợ" row), not Owed.
           const real = oweAmount(ix, s);
           owe += real;
           if (real <= 0) continue;
-          // phần trả bằng tiền giữ, phần cấn trừ (tính là trả nợ) và phần bỏ qua (đã tính vào chi tiêu) không còn là ứng trước
+          // parts paid with held money, offset (counted as repayment) or forgiven (counted as spending) are no longer advances
           advanced += Math.max(0, s.amount - (ix.heldCover.get(s.id) ?? 0) - (ix.offsetCover.get(s.id) ?? 0) - (forgivenOf.get(s.id) ?? 0));
         }
         const amt = s.type === 'owe' ? oweAmount(ix, s) : s.amount;
@@ -377,10 +377,10 @@ export function periodStats(ix: Index, range: { from: string; to: string }): Per
 
 export interface MonthPoint { month: string; total: number; mine: number; give: number; owe: number; income: number; received: number; returned: number; spent: number; advanced: number; net: number; repaid: number }
 
-/** Ngày của một dòng cấn trừ: ngày ghi, không có thì ngày giao dịch. */
+/** Date of an offset row: its own date, otherwise the transaction date. */
 const offsetDate = (ix: Index, a: Allocation) => a.date ?? (ix.tx.get(ix.shareById.get(a.shareId)?.transactionId ?? '')?.date) ?? a.createdAt.slice(0, 10);
 
-/** Dòng công nợ trong một khoảng ngày (xem PeriodStats). */
+/** Debt flows within a date range (see PeriodStats). */
 function debtFlows(ix: Index, range: { from: string; to: string }) {
   let repaid = 0, repaidOld = 0, waived = 0, waivedNew = 0, borrowed = 0;
   const old = (payableId?: string) => ix.payableById.get(payableId ?? '')?.origin === 'opening';
@@ -403,7 +403,7 @@ function debtFlows(ix: Index, range: { from: string; to: string }) {
   return { repaid, repaidOld, waived, waivedNew, borrowed };
 }
 
-/** BR-17: 12 kỳ của một năm; trung bình = Chi của tôi cả năm ÷ số tháng đã qua. */
+/** BR-17: the 12 periods of a year; average = Mine for the year ÷ months elapsed. */
 export function yearStats(ix: Index, year: number, currentMonth: string) {
   const months: MonthPoint[] = [];
   for (let i = 0; i < 12; i++) {
@@ -420,7 +420,7 @@ export function yearStats(ix: Index, year: number, currentMonth: string) {
 
 export interface Debt { share: Share; tx: Transaction; paid: number; remaining: number }
 
-/** Các khoản Đòi lại còn thiếu của một người, cũ nhất trước. */
+/** A person's open Owed items, oldest first. */
 export function openDebts(ix: Index, personId: string): Debt[] {
   const out: Debt[] = [];
   for (const t of ix.allTxs) {
@@ -435,7 +435,7 @@ export function openDebts(ix: Index, personId: string): Debt[] {
 
 export interface Outstanding { personId: string; amount: number; count: number; oldest: string }
 
-/** Đang đòi lại, theo người (thời điểm hiện tại). */
+/** Currently outstanding Owed, per person. */
 export function outstanding(ix: Index): Outstanding[] {
   const m = new Map<string, Outstanding>();
   for (const t of ix.allTxs) {
@@ -455,24 +455,24 @@ export function outstanding(ix: Index): Outstanding[] {
 
 export interface PersonEntry {
   share: Share; tx: Transaction; status?: DebtStatus; paid: number;
-  /** Số tiền của dòng: phần chia, hoặc phần bỏ qua (forgiven) trong tab Cho đi. */
+  /** Amount of the row: the share, or the forgiven part in the Given tab. */
   amount: number;
-  /** Phần đã bỏ qua trên khoản này (UC-10). */
+  /** Part of this item that was forgiven (UC-10). */
   forgiven: number;
-  /** Dòng Cho đi đến từ việc bỏ qua một khoản Đòi lại. */
+  /** A Given row that comes from forgiving an Owed item. */
   fromForgive?: boolean;
-  /** Phần đã cấn trừ (trả nợ) — đã bỏ ra khỏi amount của dòng Đòi lại. */
+  /** Part offset (repayment) — already removed from the Owed row amount. */
   offset?: number;
 }
 export interface PersonSummary { personId: string; total: number; waiting: number; entries: PersonEntry[] }
 
-/** BR-13: Cho đi / Đòi lại của từng người, từ trước tới nay. */
+/** BR-13: Given / Owed per person, all time. */
 export function peopleSummary(ix: Index, type: Exclude<ShareType, 'mine'>): PersonSummary[] {
   const m = new Map<string, PersonSummary>();
   for (const t of ix.allTxs) {
     for (const s of ix.sharesOfTx.get(t.id) ?? []) {
       if (s.type !== type || !s.personId) continue;
-      // Đòi lại: bỏ phần cấn trừ (đó là trả nợ); cấn trừ hết thì khoản này không còn là Đòi lại.
+      // Owed: drop the offset part (that is a repayment); fully offset items are no longer Owed.
       const off = type === 'owe' ? ix.offsetCover.get(s.id) ?? 0 : 0;
       const amount = s.amount - off;
       if (amount <= 0) continue;
@@ -499,7 +499,7 @@ export function peopleSummary(ix: Index, type: Exclude<ShareType, 'mine'>): Pers
   return [...m.values()].sort((a, b) => b.total - a.total);
 }
 
-/** Tìm giao dịch theo tên, sản phẩm, danh mục, tag, người (không phân biệt dấu). */
+/** Search transactions by title, product, category, tag, person (accent-insensitive). */
 export const fold = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'd').toLowerCase();
 
 export function txMatches(ix: Index, t: Transaction, q: string) {
@@ -515,8 +515,8 @@ export function txMatches(ix: Index, t: Transaction, q: string) {
 export const totalOf = (xs: { amount: number }[]) => sum(xs.map((x) => x.amount));
 
 /**
- * BR-23 / RULE-15: số dư = số dư ban đầu + mọi dòng tiền có ngày từ ngày bắt đầu tới trước `before`.
- * Giao dịch trước ngày bắt đầu đã nằm trong số dư ban đầu nên không tính lại. Chưa đặt số dư ban đầu → null.
+ * BR-23 / RULE-15: balance = opening balance + every cash flow dated from the start date up to before `before`.
+ * Transactions before the start date are already in the opening balance, so they are not counted again. No opening balance → null.
  */
 export function balanceAt(ix: Index, before?: string): number | null {
   const s = ix.snap.settings;
@@ -532,7 +532,7 @@ export function balanceAt(ix: Index, before?: string): number | null {
   return b;
 }
 
-/** Người đã cho bạn tiền (thu nhập có gắn người), từ trước tới nay. */
+/** People who gave you money (incomes with a person), all time. */
 export function giftsFromPeople(ix: Index) {
   const m = new Map<string, { personId: string; total: number; items: Income[] }>();
   for (const r of ix.incomes) {
@@ -545,14 +545,14 @@ export function giftsFromPeople(ix: Index) {
   return [...m.values()].sort((a, b) => b.total - a.total);
 }
 
-/** Ngày một khoản trừ bằng tiền thật xảy ra: ngày lần nhận, hoặc ngày giao dịch khi tự trừ vào tiền đang giữ. */
+/** When a real-money application happened: the payment date, or the transaction date for auto-applied held money. */
 function allocDate(ix: Index, a: Allocation) {
   if (a.settlementId) return ix.settlementById.get(a.settlementId)?.date ?? a.createdAt.slice(0, 10);
   const sh = ix.shareById.get(a.shareId);
   return (sh && ix.tx.get(sh.transactionId)?.date) ?? a.createdAt.slice(0, 10);
 }
 
-/** Tiền đang giữ của người khác tại một thời điểm (trước ngày `before`); không truyền = hiện tại. */
+/** Money held for others at a point in time (before `before`); omitted = now. */
 export function heldAt(ix: Index, before?: string) {
   if (!before) return [...ix.credit.values()].reduce((a, v) => a + Math.max(0, v), 0);
   const per = new Map<string, number>();
@@ -568,7 +568,7 @@ export function heldAt(ix: Index, before?: string) {
 }
 
 /**
- * Tôi đang nợ (trước ngày `before`; không truyền = hiện tại), tách khoản đầu kỳ (ngoài sổ) và khoản phát sinh trong app.
+ * What I owe (before `before`; omitted = now), split into opening (off the books) and created in the app.
  */
 export function owedAt(ix: Index, before?: string) {
   const left = new Map<string, number>();
@@ -587,14 +587,14 @@ export function owedAt(ix: Index, before?: string) {
   return { total: opening + inApp, opening, inApp };
 }
 
-/** Tôi đang nợ một người (hiện tại). */
+/** What I owe one person (now). */
 export function owedTo(ix: Index, personId: string) {
   return ix.payables.filter((p) => p.personId === personId).reduce((s, p) => s + Math.max(0, p.amount - (ix.payableUsed.get(p.id) ?? 0)), 0);
 }
 
 export interface DebtRow { personId: string; iOwe: number; theyOwe: number }
 
-/** Công nợ hai chiều theo người (hiện tại), người có số lớn trước. */
+/** Two-way debts per person (now), largest first. */
 export function debtSummary(ix: Index): DebtRow[] {
   const m = new Map<string, DebtRow>();
   const get = (id: string) => m.get(id) ?? (m.set(id, { personId: id, iOwe: 0, theyOwe: 0 }), m.get(id)!);
@@ -611,10 +611,10 @@ export interface DebtEvent { date: string; label: string; delta: number; balance
 const ORIGIN = { opening: 'Nợ đầu kỳ', borrow: 'Vay', fromHeld: 'Ứng tiền đang giữ' } as const;
 const MODE = { hold: 'Trả nợ · giữ lại cho họ', transfer: 'Trả nợ · chuyển khoản', waive: 'Được xóa nợ' } as const;
 
-/** Một lần trả nợ bằng tiền (giữ lại / chuyển khoản) — hiện là một giao dịch tiền ra. */
+/** One repayment with money (hold / transfer) — shown as one money-out transaction. */
 export interface RepayTx { key: string; personId: string; date: string; createdAt: string; amount: number; mode: 'hold' | 'transfer'; incomeId?: string | null; note?: string; ids: string[] }
 
-/** Gom các dòng trả nợ cùng một lần (cùng batch) thành một giao dịch, mới nhất trước. Được xóa nợ không phải tiền nên không có ở đây. */
+/** Group repayment rows of the same repayment (same batch) into one transaction, newest first. Waivers move no money, so they are not here. */
 export function repayTxs(ix: Index): RepayTx[] {
   const m = new Map<string, RepayTx>();
   for (const r of ix.repayments) {
@@ -627,7 +627,7 @@ export function repayTxs(ix: Index): RepayTx[] {
   return [...m.values()].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
 }
 
-/** Sổ nợ của tôi với một người: phát sinh (+), trả / cấn trừ / được xóa (−), kèm số còn nợ. */
+/** My debt book with one person: created (+), repaid / offset / waived (−), with the running balance. */
 export function debtLedger(ix: Index, personId: string): DebtEvent[] {
   const ev: (Omit<DebtEvent, 'balance'> & { at: string })[] = [];
   for (const p of ix.payables) {
@@ -652,18 +652,18 @@ export function debtLedger(ix: Index, personId: string): DebtEvent[] {
 }
 
 /**
- * RULE-18: Số dư của tôi = Số dư tài khoản − tiền đang giữ của người khác.
- * Khoản được cho (thu nhập) là của bạn nên nằm trong số này; tiền đang đòi lại không cộng vào.
+ * RULE-18: My balance = account balance − money held for others.
+ * Gifts (income) are yours, so they are included; money others still owe you is not added.
  */
 export function personalBalanceAt(ix: Index, before?: string): number | null {
   const bank = balanceAt(ix, before);
-  // Nợ phát sinh trong app (vay, ứng tiền giữ) là của người khác; nợ đầu kỳ nằm ngoài sổ nên không trừ.
+  // In-app debts (loans, spent held money) belong to others; opening debts are off the books, so not deducted.
   return bank === null ? null : bank - heldAt(ix, before) - owedAt(ix, before).inApp;
 }
 
 export interface HeldEvent { date: string; label: string; delta: number; balance: number; kind: 'in' | 'spend' | 'out' | 'gift' }
 
-/** UC-11..13: sổ giữ hộ của một người — nhận, chi hộ / trừ khoản, trả lại, cho luôn — kèm số còn giữ. */
+/** UC-11..13: a person's held-money book — received, spent on behalf / applied, returned, gifted — with the running balance. */
 export function heldLedger(ix: Index, personId: string): HeldEvent[] {
   const ev: (Omit<HeldEvent, 'balance'> & { at: string })[] = [];
   for (const st of ix.settlements) {
@@ -688,13 +688,13 @@ export function heldLedger(ix: Index, personId: string): HeldEvent[] {
     if (p.personId !== personId || p.origin !== 'fromHeld') continue;
     ev.push({ date: p.date, at: p.createdAt, label: 'Đã tiêu · chuyển thành khoản tôi nợ' + (p.note ? ` · ${p.note}` : ''), delta: -p.amount, kind: 'spend' });
   }
-  // Theo ngày, cùng ngày thì theo thứ tự ghi.
+  // By date; same date by write order.
   ev.sort((a, b) => a.date.localeCompare(b.date) || a.at.localeCompare(b.at));
   let bal = 0;
   return ev.map(({ at: _at, ...e }) => ({ ...e, balance: (bal += e.delta) }));
 }
 
-/** Số đầu kỳ đã nhập của một người (UC-14), để sửa lại. */
+/** A person's opening amounts (UC-14), for editing. */
 export function openingOf(ix: Index, personId: string) {
   const st = ix.settlements.find((s) => s.opening && s.personId === personId);
   const pay = ix.payables.find((p) => p.origin === 'opening' && p.personId === personId);

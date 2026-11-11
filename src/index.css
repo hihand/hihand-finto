@@ -1,6 +1,6 @@
-/* Nunito tự host (src/main.tsx): không gọi Google Fonts — dữ liệu không ra ngoài (NFR-06), dùng được khi offline (NFR-02). */
+/* Self-hosted Nunito (src/main.tsx): no Google Fonts call — no data leaves the device (NFR-06), works offline (NFR-02). */
 
-/* Midnight Lilac (mặc định) */
+/* Midnight Lilac (default) */
 :root,
 :root[data-theme='dark'] {
   --bg: #15131f;
@@ -62,14 +62,16 @@ body {
 button, input, select { font: inherit; color: inherit; }
 a { color: var(--primary); }
 
-.app { display: flex; flex-wrap: wrap; min-height: 100vh; }
+.app { display: flex; flex-wrap: wrap; min-height: 100vh; min-height: 100dvh; }
 .side {
   flex: 1 1 220px; max-width: 100%;
   background: var(--side); border-right: 1px solid var(--border);
   padding: 24px 16px; display: flex; flex-direction: column; gap: 20px;
 }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 18px; padding: 0 8px; }
-.brand-mark { width: 36px; height: 36px; border-radius: 12px; background: var(--primary); color: var(--on-primary); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.brand-mark { width: 36px; height: 36px; border-radius: 9px; display: block; flex-shrink: 0; }
+/* "Finto" in the deer gradient, like the wordmark (brand guide: deer-violet → deer-magenta → deer-peach). */
+.brand-finto { background: linear-gradient(100deg, #7d4fc4 0%, #b23dcb 45%, #e8946a 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .nav { display: flex; flex-wrap: wrap; gap: 6px; }
 .nav a {
   flex: 1 1 180px; height: 44px; padding: 0 12px; border-radius: 14px;
@@ -94,7 +96,7 @@ h1 { margin: 0; font-size: 28px; font-weight: 800; }
 .btn.primary { background: var(--primary); color: var(--on-primary); }
 .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 
-/* ---------- Giai đoạn 2 ---------- */
+/* ---------- Phase 2 ---------- */
 h2 { margin: 0; font-size: 18px; font-weight: 800; }
 h3 { margin: 0; font-size: 15px; font-weight: 800; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -104,7 +106,7 @@ h3 { margin: 0; font-size: 15px; font-weight: 800; }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; color: var(--text); white-space: nowrap; }
 .btn.primary { color: var(--on-primary); }
 .icon-btn { width: 44px; height: 44px; border: 0; border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
-.icon-btn:hover { background: var(--surface-2); color: var(--text); }
+@media (hover: hover) { .icon-btn:hover { background: var(--surface-2); color: var(--text); } }
 .row.between { justify-content: space-between; }
 .row.nowrap { flex-wrap: nowrap; }
 .grow { flex: 1; min-width: 0; }
@@ -125,7 +127,7 @@ h3 { margin: 0; font-size: 15px; font-weight: 800; }
 .cols > .col-main { flex: 2 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
 .cols > .col-side { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
 
-/* Ô nhập */
+/* Inputs */
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field > label, .label { font-size: 13px; font-weight: 700; color: var(--muted); }
 .input, select.input { height: 44px; border-radius: 14px; padding: 0 14px; background: var(--surface-2); border: 1px solid var(--border); outline: none; width: 100%; }
@@ -147,7 +149,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outli
 .tagchip { display: inline-flex; align-items: center; gap: 2px; height: 34px; padding: 0 4px 0 12px; border-radius: 17px; background: var(--surface-2); font-size: 14px; font-weight: 700; }
 .tagchip button { width: 30px; height: 30px; border: 0; border-radius: 15px; background: transparent; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 
-/* Nhãn */
+/* Pills */
 .pill { font-size: 11px; font-weight: 800; border-radius: 6px; padding: 2px 7px; white-space: nowrap; }
 .pill-mine { background: var(--mine-bg); color: var(--mine-text); }
 .pill-owe, .pill-open { background: var(--owe-bg); color: var(--owe); }
@@ -164,15 +166,15 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outli
 .bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .bar > span { display: block; height: 100%; border-radius: 4px; background: var(--primary); }
 
-/* Danh sách */
+/* Lists */
 .list { display: flex; flex-direction: column; }
 .item { display: flex; align-items: center; gap: 12px; padding: 10px 6px; border-top: 1px solid var(--border); min-height: 56px; }
 .list > .item:first-child, .list > div:first-child > .item { border-top: 0; }
 button.item, .item-btn { width: 100%; border: 0; border-top: 1px solid var(--border); background: transparent; text-align: left; cursor: pointer; border-radius: 0; }
 .pick { display: flex; align-items: center; gap: 12px; padding: 10px; border: 0; border-radius: 16px; background: transparent; text-align: left; cursor: pointer; width: 100%; min-height: 56px; }
 .pick[aria-pressed='true'] { background: var(--mine-bg); }
-.pick:hover { background: var(--surface-2); }
-.pick[aria-pressed='true']:hover { background: var(--mine-bg); }
+@media (hover: hover) { .pick:hover { background: var(--surface-2); } }
+@media (hover: hover) { .pick[aria-pressed='true']:hover { background: var(--mine-bg); } }
 .meta { font-size: 12px; color: var(--muted); }
 .title { font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .datebox { width: 40px; display: flex; flex-direction: column; align-items: center; font-size: 11px; line-height: 1.2; color: var(--muted); flex-shrink: 0; }
@@ -184,13 +186,13 @@ button.item, .item-btn { width: 100%; border: 0; border-top: 1px solid var(--bor
 .check.on { background: var(--primary); border-color: var(--primary); }
 .empty { padding: 28px 12px; text-align: center; color: var(--muted); }
 
-/* Thẻ số */
+/* KPI cards */
 .kpi-sub { font-size: 13px; color: var(--muted); }
 .kpi-btn { text-align: left; cursor: pointer; font: inherit; color: inherit; border-width: 2px; }
 .kpi-btn[aria-pressed='true'].give { border-color: var(--give); }
 .kpi-btn[aria-pressed='true'].owe { border-color: var(--owe); }
 .kpi-btn[aria-pressed='true'].gift { border-color: var(--income); }
-/* Thẻ chưa chọn: chỉ khác viền, không làm mờ chữ (giữ tương phản 4.5:1). */
+/* Unselected card: only the border differs, text is not dimmed (keeps 4.5:1 contrast). */
 .kpi-btn[aria-pressed='false'] { border-color: var(--border); }
 .card.hero a { color: var(--mine-text); }
 .summary { border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 8px; background: var(--surface-2); }
@@ -199,7 +201,7 @@ button.item, .item-btn { width: 100%; border: 0; border-top: 1px solid var(--bor
 .summary .row { justify-content: space-between; }
 .summary .total { font-size: 17px; font-weight: 800; padding-top: 8px; border-top: 1px dashed var(--border); }
 
-/* Người trong form chia tiền */
+/* People in the split form */
 .person-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 16px; background: var(--surface-2); }
 .person-line.mine { background: var(--mine-bg); }
 .person-line.owe { background: var(--owe-bg); }
@@ -240,22 +242,22 @@ button.item, .item-btn { width: 100%; border: 0; border-top: 1px solid var(--bor
   .only-sm { display: inline-flex; }
   .side .theme { display: none; }
   .side .theme { margin-top: 0; width: 140px; }
-  .main { padding-bottom: 110px; }
+  .main { padding-bottom: calc(110px + env(safe-area-inset-bottom)); }
   .bottom-nav {
-    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; height: 68px; padding: 0 6px env(safe-area-inset-bottom);
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; height: calc(68px + env(safe-area-inset-bottom)); padding: 0 6px env(safe-area-inset-bottom);
     background: var(--side); border-top: 1px solid var(--border); align-items: center; justify-content: space-around;
   }
   .bottom-nav a { flex: 1; height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 11px; font-weight: 700; color: var(--muted); text-decoration: none; }
   .bottom-nav a.active { color: var(--mine-text); }
   .bottom-nav a.fab { flex: 0 0 56px; height: 56px; border-radius: 28px; background: var(--primary); color: var(--on-primary); margin-top: -28px; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3); }
-  .toast-wrap { bottom: 84px; }
+  .toast-wrap { bottom: calc(84px + env(safe-area-inset-bottom)); }
   .detail { margin-left: 0; }
   .hide-sm { display: none !important; }
   .segmented { flex-wrap: wrap; }
   .segmented button { flex: 1 1 40%; }
 }
 
-/* ---------- Giai đoạn 3 ---------- */
+/* ---------- Phase 3 ---------- */
 .ychart { display: flex; flex-direction: column; gap: 6px; padding-left: 52px; }
 .ychart-plot { position: relative; display: flex; align-items: flex-end; gap: 2px; border-bottom: 1px solid var(--border); }
 .ychart-grid { position: absolute; left: 0; right: 0; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); pointer-events: none; }
@@ -264,12 +266,12 @@ button.item, .item-btn { width: 100%; border: 0; border-top: 1px solid var(--bor
 .ychart-avg span { color: var(--text); font-weight: 800; }
 .ychart-col { position: relative; z-index: 1; flex: 1; height: 100%; border: 0; padding: 0 3px; background: transparent; cursor: pointer; display: flex; align-items: flex-end; justify-content: center; }
 .ychart-col:disabled { cursor: default; }
-.ychart-col:hover:not(:disabled), .ychart-col:focus-visible { background: color-mix(in srgb, var(--surface-2) 60%, transparent); border-radius: 6px 6px 0 0; }
+@media (hover: hover) { .ychart-col:hover:not(:disabled), .ychart-col:focus-visible { background: color-mix(in srgb, var(--surface-2) 60%, transparent); border-radius: 6px 6px 0 0; } }
 .ychart-col { gap: 2px; }
 .ychart-bar { display: block; flex: 1; max-width: 18px; border-radius: 4px 4px 0 0; transition: opacity 0.12s; }
 .ychart-bar.in { background: var(--chart-in); }
 .ychart-bar.out { background: var(--chart-out); }
-.ychart-plot:hover .ychart-col:not(:hover) .ychart-bar { opacity: 0.55; }
+@media (hover: hover) { .ychart-plot:hover .ychart-col:not(:hover) .ychart-bar { opacity: 0.55; } }
 .ychart-tip { position: absolute; z-index: 3; pointer-events: none; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); font-size: 13px; white-space: nowrap; }
 .ychart-tip i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
 .ychart-axis { display: flex; gap: 2px; }
@@ -280,10 +282,67 @@ button.item, .item-btn { width: 100%; border: 0; border-top: 1px solid var(--bor
 .group-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 16px; background: var(--surface-2); }
 .note { font-size: 12px; font-weight: 700; color: var(--income); }
 
-/* Ẩn số nhạy cảm */
+/* Hiding sensitive amounts */
 .brand-row { gap: 8px; }
 .brand-row .brand { padding-right: 0; white-space: nowrap; }
 @media (min-width: 761px) { .side { flex-basis: 244px; } }
 .icon-btn[aria-pressed='true'] { color: var(--mine-text); background: var(--mine-bg); }
 .masked { letter-spacing: 0.08em; }
 @media (max-width: 760px) { .brand-row { flex: 1; } }
+
+/* ---------- Phase 4: phones (iPhone / Android, app installed to the home screen) ---------- */
+html { -webkit-text-size-adjust: 100%; }
+button, a, label, input, select { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+/* The iOS status bar (black-translucent) overlays the page: a fixed color band keeps the time / battery readable. */
+body::before {
+  content: ''; position: fixed; top: 0; left: 0; right: 0; height: env(safe-area-inset-top); z-index: 70; pointer-events: none;
+  background: var(--side);
+}
+:root[data-theme='light'] body::before { background: var(--primary); }
+.update-bar {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 24px; z-index: 55; width: min(520px, calc(100vw - 24px));
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px 10px 16px; border-radius: 16px;
+  background: var(--surface); border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); font-weight: 700;
+}
+.install-steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 10px; line-height: 1.45; }
+.ios-share { display: inline-flex; vertical-align: -3px; color: var(--primary); }
+/* On-screen keyboard: --vvh / --vvt = the visible area (updated from visualViewport in main.tsx). */
+.overlay { top: var(--vvt, 0px); bottom: auto; height: var(--vvh, 100dvh); }
+
+@media (max-width: 760px) {
+  input, select, textarea { font-size: max(16px, 1em); } /* below 16px iOS zooms in when the field is focused */
+  .side { padding-top: calc(12px + env(safe-area-inset-top)); }
+  .main { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+  .update-bar { bottom: calc(84px + env(safe-area-inset-bottom)); }
+  /* Dialogs become bottom sheets that scroll inside and stay above the keyboard. */
+  .overlay { align-items: flex-end; padding: 0; overflow: hidden; }
+  .modal {
+    width: 100%; max-height: calc(var(--vvh, 100dvh) - env(safe-area-inset-top) - 12px); overflow-y: auto; overscroll-behavior: contain;
+    border-radius: 22px 22px 0 0; padding-bottom: calc(18px + env(safe-area-inset-bottom)); animation: sheet-up 0.18s ease-out;
+  }
+  /* The Save button stays at the bottom while entering data (above the tab bar). */
+  .save-bar {
+    position: sticky; bottom: calc(76px + env(safe-area-inset-bottom)); z-index: 5;
+    margin: 0 -18px -18px; padding: 12px 18px; background: var(--surface); border-top: 1px solid var(--border); border-radius: 0 0 20px 20px;
+  }
+  .btn.sm { height: 40px; }
+  .chip.sm { height: 36px; }
+}
+@keyframes sheet-up { from { transform: translateY(24px); opacity: 0.6; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .modal { animation: none; } }
+@media (max-width: 760px) {
+  .modal .save-bar { position: static; margin: 0; padding: 0; border: 0; background: none; }
+}
+@media (max-width: 760px) {
+  /* Phones: 2-column KPI cards to reduce scrolling; adding is already on the "+" button in the tab bar. */
+  .grid-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 10px; }
+  .grid-kpi > .card { padding: 14px; border-radius: 18px; min-width: 0; }
+  .grid-kpi .kpi-value { font-size: 20px; overflow-wrap: anywhere; }
+  .grid-kpi .kpi-sub { font-size: 12px; }
+  .banner > .grow { flex: 1 1 100%; }
+  .page-head h1 { font-size: 26px; }
+}
+.amount-keys { display: flex; gap: 8px; }
+@media (hover: hover) and (pointer: fine) { .amount-keys { display: none; } }
+/* Light theme: drop the peach end so "Finto" keeps ≥ 3:1 on white (peach alone is ~2.4:1). */
+:root[data-theme='light'] .brand-finto { background-image: linear-gradient(100deg, #683ba6 0%, #aa29c4 100%); }

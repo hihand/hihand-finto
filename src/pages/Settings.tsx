@@ -9,8 +9,8 @@ import { useTheme } from '../theme';
 import { useIndex } from '../ui/data';
 import { Avatar, Icon, Segmented, Switch } from '../ui/kit';
 import { useRun } from '../ui/format';
-import { downloadBackup } from '../ui/download';
-// Xuất Excel (kèm thư viện nén) chỉ tải khi mở hộp thoại, để bản chính nhẹ hơn.
+import { useBackup } from '../ui/download';
+// Excel export (with the zip library) is only loaded when the dialog opens, to keep the main bundle small.
 const ExportDialog = lazy(() => import('../ui/ExportDialog'));
 import { fmtDate, today } from '../domain/period';
 import { setOpeningBalance } from '../domain/income';
@@ -19,6 +19,7 @@ import { balanceAt, debtSummary } from '../domain/stats';
 import { money, useMask } from '../ui/format';
 import { useSearchParams } from 'react-router-dom';
 import SyncSettings from '../ui/SyncSettings';
+import AppStatus from '../ui/AppStatus';
 
 type Tab = 'cats' | 'income' | 'people' | 'general' | 'sync';
 
@@ -43,7 +44,7 @@ export default function SettingsPage() {
   );
 }
 
-/** Tên sửa tại chỗ. */
+/** Inline-editable name. */
 function InlineName({ value, onSave, label }: { value: string; onSave: (v: string) => Promise<unknown>; label: string }) {
   const [edit, setEdit] = useState(false);
   const [v, setV] = useState(value);
@@ -72,7 +73,7 @@ function AddRow({ placeholder, onAdd, label }: { placeholder: string; onAdd: (v:
   );
 }
 
-/** BR-14 / BR-21: danh mục chi (có tag, công tắc Chi của tôi) và danh mục thu. */
+/** BR-14 / BR-21: expense categories (tags, "Counts as my spending" switch) and income categories. */
 function Categories({ ix, income }: { ix: Index; income?: boolean }) {
   const run = useRun();
   const roots = income ? ix.incomeRoots : ix.roots;
@@ -162,7 +163,7 @@ function PeopleSettings({ ix }: { ix: Index }) {
   const list = ix.people.filter((p) => showArchived || !p.archived);
   const set = (p: Person, patch: Parameters<typeof updatePerson>[2]) => run(() => updatePerson(db, p.id, patch));
   const debtOf = new Map(debtSummary(ix).map((d) => [d.personId, d]));
-  /** Ẩn người còn công nợ: hỏi lại trước (khoản nợ vẫn còn, chỉ ẩn khỏi danh sách chọn). */
+  /** Hiding a person with open debts: confirm first (the debts remain, the person is only hidden from pickers). */
   const archive = (p: Person) => {
     const d = debtOf.get(p.id);
     if (!p.archived && d && !window.confirm(`${p.name} vẫn còn công nợ${d.iOwe ? ` · bạn nợ ${money(d.iOwe)}` : ''}${d.theyOwe ? ` · nợ bạn ${money(d.theyOwe)}` : ''}. Vẫn ẩn?`)) return;
@@ -197,7 +198,7 @@ function PeopleSettings({ ix }: { ix: Index }) {
   );
 }
 
-/** BR-18: nhóm hay đi cùng — chọn nhóm khi nhập chi tiêu là tick sẵn cả nhóm. */
+/** BR-18: groups you often go out with — picking a group when adding an expense ticks everyone in it. */
 function Groups({ ix }: { ix: Index }) {
   const run = useRun();
   const [edit, setEdit] = useState<{ id?: string; name: string; memberIds: string[] } | null>(null);
@@ -251,7 +252,7 @@ function Groups({ ix }: { ix: Index }) {
   );
 }
 
-/** BR-23: số dư ban đầu — số tiền đang có tại một ngày; số dư sau đó = số này + dòng tiền. */
+/** BR-23: opening balance — money on hand at a date; later balance = this amount + cash flow. */
 function OpeningBalance({ ix }: { ix: Index }) {
   const run = useRun();
   const s = ix.snap.settings;
@@ -291,7 +292,8 @@ function General({ ix }: { ix: Index }) {
   const update = (patch: Partial<NonNullable<typeof s>>) => run(() => db.settings.update('settings', patch));
 
   const [exporting, setExporting] = useState(false);
-  const download = () => run(downloadBackup);
+  const backup = useBackup();
+  const download = () => run(backup);
   const restore = async (file?: File) => {
     if (!file) return;
     if (!confirm('Khôi phục sẽ thay toàn bộ dữ liệu hiện có. Tiếp tục?')) return;
@@ -300,6 +302,7 @@ function General({ ix }: { ix: Index }) {
 
   return (
     <section className="card" style={{ maxWidth: 860 }}>
+      <AppStatus />
       <OpeningBalance ix={ix} />
       <div className="setting">
         <div className="grow stack tight"><span className="strong">Ẩn thu nhập & số dư khi mở app</span><span className="xs muted">Mỗi lần mở app, thu nhập, số dư, còn lại và các khoản thu hiện thành •••••. Bấm nút con mắt cạnh tên app để xem; lần mở sau tự ẩn lại</span></div>

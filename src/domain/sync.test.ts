@@ -24,7 +24,7 @@ const snap = async (d: FintoDB): Promise<Snapshot> => ({
   incomes: await d.incomes.toArray(), payables: await d.payables.toArray(), repayments: await d.repayments.toArray(), settings: await d.settings.get('settings'),
 });
 const ix = async (d: FintoDB) => makeIndex(await snap(d));
-/** Nội dung các bảng đồng bộ (bỏ _seq — số thứ tự riêng của từng máy). */
+/** Contents of the synced tables (without _seq — each browser's own sequence). */
 const content = async (d: FintoDB) => {
   const out: Record<string, unknown[]> = {};
   for (const t of SYNC_TABLES) {
@@ -33,7 +33,7 @@ const content = async (d: FintoDB) => {
   }
   return out;
 };
-/** Gửi gói từ `a` sang `b` (qua file JSON, như thật). */
+/** Send a package from `a` to `b` (through a JSON file, like real use). */
 const send = async (a: FintoDB, b: FintoDB, password?: string) => {
   const bId = ((await b.meta.get('device'))!.value as { id: string }).id;
   const peers = await getPeers(a);
@@ -56,8 +56,8 @@ beforeEach(async () => {
   B = await open('PC2');
 });
 
-describe('đồng bộ hai trình duyệt bằng gói JSON', () => {
-  it('lần đầu: gộp hai sổ, danh mục mặc định không bị nhân đôi; hai bên giống hệt nhau', async () => {
+describe('syncing two browsers with JSON packages', () => {
+  it('first sync: merges two ledgers, default categories are not duplicated; both sides end identical', async () => {
     await lunch(A, 100_000);
     await lunch(B, 50_000);
     const catsBefore = (await A.categories.toArray()).length;
@@ -65,29 +65,29 @@ describe('đồng bộ hai trình duyệt bằng gói JSON', () => {
     expect(first.report.fixes.join(' ')).toMatch(/danh mục trùng/);
     await send(B, A);
     expect(await content(A)).toEqual(await content(B));
-    // Danh mục còn sống đúng bằng một bộ mặc định; khoản chi của B đã chuyển sang danh mục giữ lại.
+    // Live categories equal exactly one default set; B's expense moved to the kept category.
     expect((await A.categories.toArray()).filter((c) => !c.deletedAt)).toHaveLength(catsBefore);
     const x = await ix(A);
     expect(periodStats(x, NOV).mine).toBe(150_000);
     expect(periodStats(x, NOV).byCategory).toHaveLength(1);
   });
 
-  it('chỉ gửi phần thay đổi; nhận rồi thì không gửi lại; gói thứ hai gọn', async () => {
+  it('only changes are sent; received data is not sent back; the second package is small', async () => {
     await lunch(A, 100_000);
     await send(A, B);
-    await send(B, A); // B xác nhận đã nhận của A
+    await send(B, A); // B acknowledges what it received from A
     await lunch(A, 20_000, '2026-11-06');
     const { pkg } = await send(A, B);
-    // Chỉ 1 giao dịch + 1 phần chia mới (không gửi lại cả sổ, không gửi lại những gì vừa nhận từ B).
+    // Only 1 transaction + 1 new share (not the whole ledger again, not what was just received from B).
     expect(packageSize(pkg)).toBe(2);
     const bId = ((await B.meta.get('device'))!.value as { id: string }).id;
-    expect(await pendingFor(A, bId)).toBe(2); // B chưa xác nhận gói vừa rồi
+    expect(await pendingFor(A, bId)).toBe(2); // B has not acknowledged that package yet
     await send(B, A);
     expect(await pendingFor(A, bId)).toBe(0);
     expect(await content(A)).toEqual(await content(B));
   });
 
-  it('cùng sửa một bản ghi ở hai máy: bản sửa sau thắng; xóa ở một máy thì máy kia cũng xóa', async () => {
+  it('same record edited on two browsers: the later edit wins; a delete on one deletes on the other', async () => {
     const txId = await lunch(A, 100_000);
     await send(A, B);
     await send(B, A);
@@ -104,7 +104,7 @@ describe('đồng bộ hai trình duyệt bằng gói JSON', () => {
     expect(periodStats(await ix(B), NOV).mine).toBe(0);
   });
 
-  it('người, tag thêm riêng ở hai máy với cùng tên được gộp; khoản nợ và tiền giữ đi theo', async () => {
+  it('people and tags added separately with the same name are merged; debts and held money follow', async () => {
     await addPerson(A, 'Mẹ');
     await addPerson(B, 'Mẹ');
     await setOpening(A, { personId: await person(A, 'Mẹ'), date: '2026-11-01', held: 0, owedByMe: 12_000_000, owedToMe: 0 });
@@ -121,7 +121,7 @@ describe('đồng bộ hai trình duyệt bằng gói JSON', () => {
     expect(await content(A)).toEqual(await content(B));
   });
 
-  it('ba trình duyệt: thay đổi đi vòng A → B → C', async () => {
+  it('three browsers: changes travel A → B → C', async () => {
     const C = await open('Laptop');
     await lunch(A, 100_000);
     await send(A, B);
@@ -139,7 +139,7 @@ describe('đồng bộ hai trình duyệt bằng gói JSON', () => {
     expect(await content(B)).toEqual(await content(C));
   });
 
-  it('cài đặt dùng chung (số dư ban đầu) đồng bộ; giao diện thì không', async () => {
+  it('shared settings (opening balance) sync; theme does not', async () => {
     await setOpeningBalance(A, 5_000_000, '2026-11-01');
     await B.settings.update('settings', { theme: 'light' });
     await send(A, B);
@@ -151,13 +151,13 @@ describe('đồng bộ hai trình duyệt bằng gói JSON', () => {
     expect((await A.settings.get('settings'))!.theme).toBe('dark');
   });
 
-  it('gộp làm tiền giữ âm (hai máy cùng dùng tiền giữ): tự gỡ khoản tự trừ và báo lại', async () => {
+  it('a merge that makes held money negative (both browsers used it): auto-applied rows are removed and reported', async () => {
     await addPerson(A, 'Mẹ');
     const mom = await person(A, 'Mẹ');
     await settle(A, { personId: mom, date: '2026-11-01', amount: 1_000_000, picks: [] });
     await send(A, B);
     await send(B, A);
-    // PC1 trả lại 1tr cho mẹ; PC2 (chưa biết) chi hộ 1tr trừ vào tiền giữ.
+    // PC1 returns 1M to Mom; PC2 (unaware) pays 1M on behalf from held money.
     await returnCredit(A, mom, 1_000_000, '2026-11-05');
     await saveExpense(B, {
       date: '2026-11-05', kind: 'expense', categoryId: await cat(B, 'Điện'), title: 'Điện nhà mẹ', totalAmount: 1_000_000, splitMode: 'custom', tagIds: [],
@@ -172,8 +172,8 @@ describe('đồng bộ hai trình duyệt bằng gói JSON', () => {
   });
 });
 
-describe('gói đồng bộ', () => {
-  it('mã hóa bằng mật khẩu; sai mật khẩu thì báo lỗi; không nhập gói của chính mình; không nhận file sao lưu', async () => {
+describe('sync package', () => {
+  it('password encryption; wrong password errors; own package rejected; backup files rejected', async () => {
     await lunch(A, 100_000);
     const text = await packageToText(await buildPackage(A, null), 'bí mật');
     expect(text).not.toContain('Ăn trưa');
@@ -186,7 +186,7 @@ describe('gói đồng bộ', () => {
     await expect(readPackage(JSON.stringify({ app: 'hihand-finto', kind: 'sync', v: 1, from: { id: 'x', name: 'x' }, tables: { evil: [] } }))).rejects.toThrow();
   });
 
-  it('nhập lại cùng một gói hai lần không đổi gì', async () => {
+  it('importing the same package twice changes nothing', async () => {
     await lunch(A, 100_000);
     const pkg = await buildPackage(A, null);
     await importPackage(B, pkg);
@@ -196,15 +196,15 @@ describe('gói đồng bộ', () => {
     expect(await content(B)).toEqual(before);
   });
 
-  it('bỏ lỡ một gói: không xác nhận nhầm, gói sau tự gửi lại phần thiếu', async () => {
+  it('a lost package: no false acknowledgement, the next package resends what is missing', async () => {
     await lunch(A, 100_000);
     await send(A, B);
     await send(B, A);
     const bId = ((await B.meta.get('device'))!.value as { id: string }).id;
     await lunch(A, 10_000, '2026-11-07');
-    await buildPackage(A, bId); // gói này bị thất lạc
+    await buildPackage(A, bId); // this package gets lost
     await lunch(A, 20_000, '2026-11-08');
-    await send(A, B); // gói mới vẫn chứa cả hai khoản vì B chưa xác nhận
+    await send(A, B); // the new package still has both items because B has not acknowledged
     expect(periodStats(await ix(B), NOV).mine).toBe(130_000);
   });
 });

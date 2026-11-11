@@ -4,7 +4,7 @@ import { exportSheets } from './export';
 import { periodRange } from './period';
 import { heldAt, heldLedger, makeIndex, outstanding, peopleSummary, periodStats, personalBalanceAt, yearStats, type Snapshot } from './stats';
 
-/** NFR-01: 10.000 giao dịch — các phép tính cho một màn phải xong dưới 1 giây. */
+/** NFR-01: 10,000 transactions — the calculations for one screen must finish within 1 second. */
 function bigSnapshot(n = 10_000): Snapshot {
   const t = '2026-01-01T00:00:00.000Z';
   const b = (id: string) => ({ id, createdAt: t, updatedAt: t, deletedAt: null });
@@ -35,8 +35,8 @@ function bigSnapshot(n = 10_000): Snapshot {
 
 const time = (label: string, f: () => unknown) => { const s = performance.now(); f(); const ms = performance.now() - s; console.log(`  ${label.padEnd(38)} ${ms.toFixed(0)} ms`); return ms; };
 
-describe('NFR-01 hiệu năng', () => {
-  it('10.000 giao dịch', () => {
+describe('NFR-01 performance', () => {
+  it('10,000 transactions', () => {
     const snap = bigSnapshot();
     let ix = makeIndex(snap);
     const total =

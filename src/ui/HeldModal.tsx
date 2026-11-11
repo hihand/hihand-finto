@@ -13,9 +13,9 @@ const toText = (n: number) => (n ? n.toLocaleString('vi-VN') : '');
 type Mode = 'book' | 'in' | 'return' | 'gift';
 
 /**
- * UC-11..13 + UC-09: sổ giữ hộ của một người và các việc với tiền giữ:
- * + nhận tiền giữ (gửi trước / nạp thêm), chi hộ (sang màn Thêm), trả lại, hoặc họ cho luôn (thành thu nhập).
- * Không truyền `personId` thì cho chọn người trước (ví dụ lần đầu Linh gửi tiền nhờ giữ).
+ * UC-11..13 + UC-09: a person's held-money book and actions on held money:
+ * + receive money to hold (deposit / top-up), pay on behalf (goes to the Add screen), return, or they gift it (becomes income).
+ * Without `personId`, pick a person first (e.g. the first time Linh sends money to hold).
  */
 export default function HeldModal({ ix, personId: initialPerson, onClose, initial = 'book' }: {
   ix: Index; personId: string | null; onClose: () => void; initial?: Mode;
@@ -58,7 +58,7 @@ export default function HeldModal({ ix, personId: initialPerson, onClose, initia
     }
   };
 
-  // Bước chọn người (khi mở từ nút "+ Nhận tiền giữ" chung).
+  // Person step (when opened from the generic "+ Nhận tiền giữ" button).
   if (!personId) {
     return (
       <Modal title="Nhận tiền giữ hộ" onClose={onClose}>

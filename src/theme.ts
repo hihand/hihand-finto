@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type Settings } from './db/schema';
 
-/** Áp theme lên <html data-theme>; "system" theo cài đặt sáng/tối của máy. */
+/** Apply the theme to <html data-theme>; "system" follows the device light / dark setting. */
 export function useTheme() {
   const settings = useLiveQuery(() => db.settings.get('settings'));
   const pref = settings?.theme ?? 'dark';
@@ -12,6 +12,8 @@ export function useTheme() {
     const apply = () => {
       const mode = pref === 'system' ? (mq.matches ? 'light' : 'dark') : pref;
       document.documentElement.dataset.theme = mode;
+      // Status bar (Android) / address bar color follows the theme.
+      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', mode === 'light' ? '#ffffff' : '#1a1726');
     };
     apply();
     mq.addEventListener('change', apply);

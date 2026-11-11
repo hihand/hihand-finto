@@ -1,29 +1,29 @@
 import { base, now, type FintoDB, type Share, type Allocation, type TxKind, type SplitMode } from '../db/schema';
 import { assertBalanced, type ShareDraft } from './split';
 
-/** Ngày phải là YYYY-MM-DD có thật; ngày trống làm giao dịch biến mất khỏi mọi thống kê. */
+/** The date must be a real YYYY-MM-DD; an empty date would make the transaction disappear from all stats. */
 export function assertDate(date: string) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date ?? '');
   const d = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
   if (!m || !d || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3]) throw new Error('Ngày không hợp lệ');
 }
 
-/** Danh mục phải còn và đúng loại (chi / thu). */
+/** The category must exist and be of the right kind (expense / income). */
 async function assertCategory(db: FintoDB, id: string, kind: 'expense' | 'income') {
   const c = id ? await db.categories.get(id) : undefined;
   if (!c || c.deletedAt || (c.kind ?? 'expense') !== kind) throw new Error(kind === 'income' ? 'Cần chọn danh mục thu nhập' : 'Cần chọn danh mục chi');
 }
 
-/** Số đã trừ của một share owe. */
+/** Amount already applied to an owe share. */
 async function paidOf(db: FintoDB, shareId: string) {
   const rows = await db.allocations.where('shareId').equals(shareId).toArray();
   return rows.filter((a) => !a.deletedAt).reduce((s, a) => s + a.amount, 0);
 }
 
 /**
- * RULE-06: tiền đang giữ = tiền họ đã chuyển − tiền đã trả lại họ − tổng đã trừ bằng tiền thật
- * + phần trả nợ giữ lại cho họ (repayment 'hold') − phần đã chuyển thành khoản tôi nợ (payable 'fromHeld').
- * Phần bỏ qua (forgive) và cấn trừ (offset) không đụng tiền đang giữ.
+ * RULE-06: held money = what they sent − what was returned to them − what was applied with real money
+ * + repayments kept for them (repayment 'hold') − what was turned into a debt (payable 'fromHeld').
+ * Forgive and offset rows do not touch held money.
  */
 export async function creditOf(db: FintoDB, personId: string) {
   const sets = (await db.settlements.where('personId').equals(personId).toArray()).filter((s) => !s.deletedAt);
@@ -34,10 +34,10 @@ export async function creditOf(db: FintoDB, personId: string) {
     + holds.reduce((s, x) => s + x.amount, 0) - moved.reduce((s, x) => s + x.amount, 0);
 }
 
-/** Khoản trừ bằng tiền thật / tiền đang giữ (không phải bỏ qua, không phải cấn trừ). */
+/** Applied with real money / held money (not a forgive, not an offset). */
 export const touchesHeld = (a: Pick<Allocation, 'kind'>) => a.kind !== 'forgive' && a.kind !== 'offset';
 
-/** Các khoản TÔI nợ một người còn lại, cũ nhất trước (đã trừ các lần trả / xóa nợ / cấn trừ). */
+/** What I still owe a person, oldest first (after repayments / waivers / offsets). */
 export async function openPayables(db: FintoDB, personId: string) {
   const pays = (await db.payables.where('personId').equals(personId).toArray()).filter((p) => !p.deletedAt);
   const reps = (await db.repayments.where('personId').equals(personId).toArray()).filter((r) => !r.deletedAt);
@@ -50,12 +50,12 @@ export async function openPayables(db: FintoDB, personId: string) {
     .sort((a, b) => a.payable.date.localeCompare(b.payable.date) || a.payable.createdAt.localeCompare(b.payable.createdAt));
 }
 
-/** Tổng tôi đang nợ một người. */
+/** Total I owe a person. */
 export async function owedOf(db: FintoDB, personId: string) {
   return (await openPayables(db, personId)).reduce((s, p) => s + Math.max(0, p.remaining), 0);
 }
 
-/** Chia một số tiền trả nợ vào các khoản tôi nợ, cũ nhất trước. */
+/** Split a repayment across what I owe, oldest first. */
 export async function splitPayables(db: FintoDB, personId: string, amount: number) {
   const out: { payableId: string; amount: number }[] = [];
   let left = amount;
@@ -69,12 +69,12 @@ export async function splitPayables(db: FintoDB, personId: string, amount: numbe
   return out;
 }
 
-/** Khoản tôi nợ không được âm (đã trả / cấn trừ nhiều hơn số nợ). */
+/** A payable must not go negative (repaid / offset more than owed). */
 export async function assertPayablesOk(db: FintoDB, personId: string) {
   if ((await openPayables(db, personId)).some((p) => p.remaining < 0)) throw new Error('Số đã trả vượt khoản nợ');
 }
 
-/** Các khoản Đòi lại còn thiếu của một người, cũ nhất trước. */
+/** A person's open Owed items, oldest first. */
 export async function openDebts(db: FintoDB, personId: string) {
   const shares = (await db.shares.where('personId').equals(personId).toArray()).filter((s) => !s.deletedAt && s.type === 'owe');
   const out: { share: Share; date: string; remaining: number; paid: number }[] = [];
@@ -101,18 +101,18 @@ export interface ExpenseInput {
   splitMode: SplitMode;
   tagIds: string[];
   shares: ShareDraft[];
-  applyCredit?: boolean; // RULE-07, mặc định theo cài đặt
-  onBehalf?: boolean; // UC-12: chi hộ, mặc định trừ vào tiền đang giữ
+  applyCredit?: boolean; // RULE-07, defaults to the setting
+  onBehalf?: boolean; // UC-12: paid on behalf, uses held money by default
   /**
-   * Cách xử lý phần Đòi lại của từng người (theo thứ tự): trừ tiền đang giữ → cấn trừ khoản tôi nợ họ
-   * → phần còn lại để họ nợ ('owe', mặc định) hoặc cho luôn ('give' = bỏ qua, thành Cho đi).
+   * How each person's Owed share is handled (in order): use held money → offset what I owe them
+   * → the rest stays owed ('owe', default) or is given away ('give' = forgive, becomes Given).
    */
   perPerson?: Record<string, PersonSettle>;
 }
 
 export interface PersonSettle { credit?: boolean; offset?: boolean; rest?: 'owe' | 'give' }
 
-/** Lưu một khoản chi trong một giao dịch IndexedDB. */
+/** Save an expense in one IndexedDB transaction. */
 export async function saveExpense(db: FintoDB, input: ExpenseInput) {
   if (input.totalAmount <= 0) throw new Error('Số tiền phải lớn hơn 0');
   if (!input.categoryId) throw new Error('Cần chọn danh mục');
@@ -165,14 +165,14 @@ export interface SettleInput {
   amount: number;
   note?: string;
   picks: { shareId: string; amount: number }[];
-  /** UC-09: phần dư của tiền vừa nhận — 'keep' giữ lại cho họ (mặc định), 'gift' họ cho luôn (ghi thu nhập). */
+  /** UC-09: surplus of the money received — 'keep' as their held money (default), 'gift' they give it away (recorded as income). */
   surplus?: 'keep' | 'gift';
-  /** UC-10: phần thiếu so với khoản đã chọn — 'owe' để họ nợ tiếp (mặc định), 'forgive' bạn cho luôn. */
+  /** UC-10: shortfall versus the chosen items — 'owe' keeps it owed (default), 'forgive' you let it go. */
   shortfall?: 'owe' | 'forgive';
   giftCategoryId?: string;
 }
 
-/** Danh mục thu cho phần "cho luôn": Được cho/tặng › Bạn bè, nếu không có thì danh mục thu đầu tiên. */
+/** Income category for gifted surplus: Được cho/tặng › Bạn bè, otherwise the first income category. */
 async function giftCategory(db: FintoDB, preferred?: string) {
   if (preferred) return preferred;
   const cats = (await db.categories.toArray()).filter((c) => !c.deletedAt && c.kind === 'income');
@@ -182,9 +182,9 @@ async function giftCategory(db: FintoDB, preferred?: string) {
 }
 
 /**
- * Nhận tiền từ một người (BR-06/07/08, UC-09, UC-10): trừ vào các khoản đã chọn (cũ trước, được trừ một phần).
- * Dư: giữ lại (tiền đang giữ) hoặc họ cho luôn (thu nhập gắn với lần nhận). Thiếu: để nợ tiếp hoặc bạn bỏ qua (Cho đi).
- * Tổng tiền vào luôn đúng số họ chuyển: lần nhận (amount − phần cho) + thu nhập (phần cho).
+ * Receive money from a person (BR-06/07/08, UC-09, UC-10): applied to the chosen items (oldest first, partial allowed).
+ * Surplus: kept (held money) or given away (income tied to the payment). Shortfall: stays owed or you forgive it (Given).
+ * Total money in always equals what they sent: payment (amount − gift) + income (gift).
  */
 export async function settle(db: FintoDB, input: SettleInput) {
   if (!(input.amount > 0)) throw new Error('Số tiền phải lớn hơn 0');
@@ -205,7 +205,7 @@ export async function settle(db: FintoDB, input: SettleInput) {
     if (picked > available && !input.shortfall) throw new Error('Tổng khoản trừ vượt tiền nhận + tiền đang giữ');
     const gift = input.surplus === 'gift' ? Math.max(0, input.amount - picked) : 0;
 
-    // Tiền thật trừ lần lượt từ khoản cũ nhất; phần không đủ: bỏ qua hoặc để nợ tiếp.
+    // Real money is applied oldest first; the shortfall is forgiven or stays owed.
     let left = Math.min(picked, available);
     const pay: { shareId: string; amount: number }[] = [];
     const forgive: { shareId: string; amount: number }[] = [];
@@ -237,19 +237,19 @@ export async function settle(db: FintoDB, input: SettleInput) {
   });
 }
 
-/** Giữ tương thích: nhận tiền, phần dư giữ lại. */
+/** Backwards compatible: receive money, keep the surplus. */
 export const receivePayment = (db: FintoDB, input: Omit<SettleInput, 'surplus' | 'shortfall'>) => settle(db, input) as Promise<string>;
 
 /**
- * UC-11: nhận tiền nhờ giữ (gửi trước / nạp thêm). Nếu người đó đang có khoản Đòi lại
- * (ví dụ chi hộ vượt tiền giữ) và `coverDebts` bật thì trừ luôn các khoản đó, cũ nhất trước.
+ * UC-11: receive money to hold (deposit / top-up). If that person has Owed items
+ * (e.g. on-behalf payments beyond held money) and `coverDebts` is on, cover them right away, oldest first.
  */
 export async function depositCredit(db: FintoDB, input: { personId: string; date: string; amount: number; note?: string; coverDebts?: boolean }) {
   const picks = input.coverDebts ? await pickOldest(db, input.personId, input.amount) : [];
   return settle(db, { personId: input.personId, date: input.date, amount: input.amount, note: input.note || 'Gửi giữ', picks }) as Promise<string>;
 }
 
-/** UC-10 (không kèm lần nhận): bạn bỏ qua một phần hoặc cả khoản Đòi lại; phần đó thành Cho đi. */
+/** UC-10 (without a payment): you forgive part or all of an Owed item; that part becomes Given. */
 export async function forgiveShare(db: FintoDB, shareId: string, amount: number, date: string) {
   assertDate(date);
   return db.transaction('rw', [db.shares, db.allocations, db.payables, db.repayments], async () => {
@@ -260,7 +260,7 @@ export async function forgiveShare(db: FintoDB, shareId: string, amount: number,
   });
 }
 
-/** UC-13: trả lại cho người đó một phần / toàn bộ tiền đang giữ. Không phải Cho đi. */
+/** UC-13: return part / all of a person's held money. Not Given. */
 export async function returnCredit(db: FintoDB, personId: string, amount: number, date: string, note?: string) {
   if (!(amount > 0)) throw new Error('Số tiền phải lớn hơn 0');
   assertDate(date);
@@ -274,8 +274,8 @@ export async function returnCredit(db: FintoDB, personId: string, amount: number
 }
 
 /**
- * Đổi tiền đang giữ thành quà (UC-09, khi lỡ chọn "giữ lại"): tách các lần nhận gần nhất thành
- * phần được trả lại + thu nhập gắn với lần nhận. Tiền vào không đổi; tiền đang giữ giảm; Số dư của tôi tăng.
+ * Turn held money into a gift (UC-09, when "keep" was chosen by mistake): split the latest payments into
+ * the returned part + income tied to the payment. Money in unchanged; held money down; My balance up.
  */
 export async function giftFromCredit(db: FintoDB, personId: string, amount: number, categoryId?: string) {
   if (amount <= 0) throw new Error('Số tiền phải lớn hơn 0');
@@ -301,7 +301,7 @@ export async function giftFromCredit(db: FintoDB, personId: string, amount: numb
   });
 }
 
-/** Trừ các khoản Đòi lại cũ vào tiền đang giữ (không có tiền mới chuyển tới). */
+/** Apply old Owed items against held money (no new money received). */
 export async function applyCreditTo(db: FintoDB, personId: string, picks: { shareId: string; amount: number }[]) {
   if (picks.length === 0) throw new Error('Chưa chọn khoản nào');
   return db.transaction('rw', [db.settlements, db.allocations, db.payables, db.repayments, db.shares, db.transactions], async () => {
@@ -317,7 +317,7 @@ export async function applyCreditTo(db: FintoDB, personId: string, picks: { shar
   });
 }
 
-/** "Tự chọn khoản cũ nhất": trừ lần lượt, khoản cuối có thể chỉ trừ một phần. */
+/** "Pick the oldest": apply in order; the last item may be partly applied. */
 export async function pickOldest(db: FintoDB, personId: string, amount: number) {
   let left = amount + Math.max(0, await creditOf(db, personId));
   const picks: { shareId: string; amount: number }[] = [];
@@ -330,7 +330,7 @@ export async function pickOldest(db: FintoDB, personId: string, amount: number) 
   return picks;
 }
 
-/** Gỡ khoản tự trừ (mới nhất trước) cho đến khi tiền đang giữ không âm — RULE-13. Trả về số khoản đã gỡ. */
+/** Remove auto-applied rows (newest first) until held money is not negative — RULE-13. Returns how many were removed. */
 export async function fixNegativeCredit(db: FintoDB, personId: string) {
   let credit = await creditOf(db, personId);
   if (credit >= 0) return 0;
@@ -347,7 +347,7 @@ export async function fixNegativeCredit(db: FintoDB, personId: string) {
   return n;
 }
 
-/** Gỡ cấn trừ (mới nhất trước) khi khoản tôi nợ đã bị trả bằng cách khác (chờ hoàn tác, hoặc gộp từ máy khác). Trả về số dòng đã gỡ. */
+/** Remove offsets (newest first) when the payable was repaid another way (pending undo, or merged from another browser). Returns how many rows were removed. */
 export async function fixOverOffset(db: FintoDB, personId: string) {
   let n = 0;
   for (const p of await openPayables(db, personId)) {
@@ -366,7 +366,7 @@ export async function fixOverOffset(db: FintoDB, personId: string) {
   return n;
 }
 
-/** RULE-13: xóa một lần nhận (kèm phần cho luôn, phần bỏ qua của nó) hoặc một lần trả lại tiền giữ. */
+/** RULE-13: delete a payment (with its gifted / forgiven parts) or a held-money return. */
 export async function deleteSettlement(db: FintoDB, settlementId: string) {
   return db.transaction('rw', [db.settlements, db.allocations, db.payables, db.repayments, db.incomes], async () => {
     const st = await db.settlements.get(settlementId);
@@ -385,8 +385,8 @@ export async function deleteSettlement(db: FintoDB, settlementId: string) {
 }
 
 /**
- * Xóa mềm giao dịch; khoản trừ trên các phần chia của nó cũng bị gỡ (tiền quay lại tiền đang giữ).
- * Trả về dấu thời gian xóa để hoàn tác (BR-11).
+ * Soft-delete a transaction; rows applied to its shares are removed too (money goes back to held money).
+ * Returns the delete timestamp for undo (BR-11).
  */
 export async function deleteTransaction(db: FintoDB, txId: string) {
   return db.transaction('rw', [db.transactions, db.shares, db.allocations, db.payables, db.repayments], async () => {
@@ -403,7 +403,7 @@ export async function deleteTransaction(db: FintoDB, txId: string) {
   });
 }
 
-/** Hoàn tác xóa: khôi phục đúng các bản ghi bị xóa cùng lúc; tiền đang giữ vẫn không âm (RULE-06). */
+/** Undo delete: restore exactly the records deleted together; held money stays non-negative (RULE-06). */
 export async function restoreTransaction(db: FintoDB, txId: string, stamp: string) {
   return db.transaction('rw', [db.transactions, db.shares, db.allocations, db.payables, db.repayments, db.settlements], async () => {
     const tx = await db.transactions.get(txId);
@@ -416,7 +416,7 @@ export async function restoreTransaction(db: FintoDB, txId: string, stamp: strin
       await db.shares.update(s.id, { deletedAt: null, updatedAt: t });
       for (const a of await db.allocations.where('shareId').equals(s.id).toArray()) {
         if (a.deletedAt !== stamp) continue;
-        // Lần nhận tiền của khoản trừ này đã bị xóa trong lúc chờ hoàn tác → không khôi phục khoản trừ.
+        // The payment behind this row was deleted while waiting for undo → do not restore the row.
         if (a.settlementId && (await db.settlements.get(a.settlementId))?.deletedAt) continue;
         await db.allocations.update(a.id, { deletedAt: null, updatedAt: t });
         persons.add(a.personId);
@@ -429,7 +429,7 @@ export async function restoreTransaction(db: FintoDB, txId: string, stamp: strin
   });
 }
 
-/** RULE-09: chỉ sửa ngày, danh mục, tag, ghi chú, tên sản phẩm. */
+/** RULE-09: only date, category, tags, note and product name can be edited. */
 export async function updateTransactionMeta(
   db: FintoDB,
   txId: string,
@@ -454,7 +454,7 @@ export async function updateTransactionMeta(
   });
 }
 
-/** Trạng thái một khoản Đòi lại. */
+/** Status of an Owed item. */
 export async function shareStatus(db: FintoDB, share: Share): Promise<'paid' | 'partial' | 'open'> {
   const paid = await paidOf(db, share.id);
   return paid >= share.amount ? 'paid' : paid > 0 ? 'partial' : 'open';

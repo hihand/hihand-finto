@@ -1,6 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie';
 
-/** Mọi bảng có id (UUID), createdAt, updatedAt, deletedAt để sau này đồng bộ với app mobile. */
+/** Every table has id (UUID), createdAt, updatedAt, deletedAt so it can be synced later. */
 export interface Base {
   id: string;
   createdAt: string; // ISO
@@ -32,10 +32,10 @@ export interface GroupMember extends Base {
 export interface Category extends Base {
   name: string;
   icon: string;
-  parentId: string | null; // null = danh mục chính
+  parentId: string | null; // null = top-level category
   countsAsMine: boolean;
   sortOrder: number;
-  /** 'income' = danh mục thu nhập; không có = danh mục chi (dữ liệu cũ). */
+  /** 'income' = income category; missing = expense category (old data). */
   kind?: 'expense' | 'income';
 }
 
@@ -52,14 +52,14 @@ export interface CategoryTag extends Base {
 export interface Transaction extends Base {
   date: string; // YYYY-MM-DD
   kind: TxKind;
-  categoryId: string; // danh mục con nếu có
+  categoryId: string; // subcategory if any
   title: string;
   productName?: string;
-  /** Chi hộ người khác (UC-12): không có phần Của tôi, trừ vào tiền đang giữ. */
+  /** Paid on behalf of someone (UC-12): no "Mine" share, deducted from held money. */
   onBehalf?: boolean;
-  totalAmount: number; // đồng, số nguyên
+  totalAmount: number; // VND, integer
   splitMode: SplitMode;
-  /** Số "Họ đang nợ tôi" nhập lúc bắt đầu dùng app: không phải tiền ra, không vào thống kê kỳ. */
+  /** "They owe me" amount entered when starting to use the app: not money out, not in period stats. */
   opening?: boolean;
 }
 
@@ -70,7 +70,7 @@ export interface TransactionTag extends Base {
 
 export interface Share extends Base {
   transactionId: string;
-  personId: string | null; // null = tôi
+  personId: string | null; // null = me
   type: ShareType;
   amount: number;
 }
@@ -80,30 +80,30 @@ export interface Settlement extends Base {
   date: string;
   amount: number;
   note?: string;
-  /** 'in' (mặc định) = người đó chuyển cho bạn; 'out' = bạn trả lại tiền đang giữ của họ (UC-13). */
+  /** 'in' (default) = that person sent money to you; 'out' = you returned their held money (UC-13). */
   direction?: 'in' | 'out';
-  /** Số đang giữ nhập lúc bắt đầu dùng app: đã nằm trong số dư ban đầu, không phải tiền vào. */
+  /** Held amount entered when starting to use the app: already part of the opening balance, not money in. */
   opening?: boolean;
 }
 
 export interface Allocation extends Base {
-  settlementId: string | null; // null = trừ từ tiền đang giữ (hoặc bỏ qua không kèm lần nhận)
+  settlementId: string | null; // null = deducted from held money (or forgiven without a payment)
   shareId: string;
   personId: string;
   amount: number;
-  /** 'pay' (mặc định) = trừ bằng tiền thật; 'forgive' = bạn bỏ qua, phần đó thành Cho đi (UC-10); 'offset' = cấn trừ với khoản tôi nợ người đó. Hai loại sau không đụng tiền đang giữ. */
+  /** 'pay' (default) = settled with real money; 'forgive' = you let it go, that part becomes Given (UC-10); 'offset' = netted against what I owe that person. The last two do not touch held money. */
   kind?: 'pay' | 'forgive' | 'offset';
-  /** Ngày bỏ qua / cấn trừ (với kind 'forgive' | 'offset'). */
+  /** Date of the forgive / offset (for kind 'forgive' | 'offset'). */
   date?: string;
-  /** Chỉ với kind 'offset': khoản tôi nợ được cấn trừ. */
+  /** Only for kind 'offset': the payable (what I owe) it is netted against. */
   payableId?: string;
 }
 
 /**
- * Khoản TÔI nợ một người.
- * - 'opening': nợ từ trước khi dùng app (ngoài sổ: không trừ vào Số dư của tôi; trả thì tính là tiền ra).
- * - 'borrow': vay mới, tiền vào tài khoản (trong sổ).
- * - 'fromHeld': chuyển một phần tiền đang giữ thành khoản nợ vì đã tiêu mất (trong sổ).
+ * Money that I owe a person.
+ * - 'opening': owed from before using the app (off the books: not deducted from My balance; repaying it counts as money out).
+ * - 'borrow': a new loan, money came into the account (on the books).
+ * - 'fromHeld': part of held money that was spent, turned into a debt (on the books).
  */
 export type PayableOrigin = 'opening' | 'borrow' | 'fromHeld';
 export interface Payable extends Base {
@@ -115,10 +115,10 @@ export interface Payable extends Base {
 }
 
 /**
- * Một lần giảm khoản tôi nợ (gắn với đúng một khoản nợ).
- * - 'hold': trả bằng cách giữ lại trong tài khoản cho người đó (thành tiền đang giữ).
- * - 'transfer': chuyển khoản trả thẳng.
- * - 'waive': người đó xóa nợ cho tôi (không có tiền đi đâu).
+ * One reduction of what I owe (tied to exactly one payable).
+ * - 'hold': repaid by keeping the money in my account for that person (becomes held money).
+ * - 'transfer': repaid by bank transfer.
+ * - 'waive': that person forgave the debt (no money moves).
  */
 export type RepayMode = 'hold' | 'transfer' | 'waive';
 export interface Repayment extends Base {
@@ -127,21 +127,21 @@ export interface Repayment extends Base {
   date: string;
   amount: number;
   mode: RepayMode;
-  /** Trả nợ từ một khoản thu nhập: xóa thu nhập thì xóa theo. */
+  /** Repayment made from an income: deleting the income deletes it too. */
   incomeId?: string | null;
   note?: string;
-  /** Các dòng ghi cùng một lần trả (một lần trả chia vào nhiều khoản nợ) có chung batch → hiện là 1 giao dịch. */
+  /** Rows written by the same repayment (one repayment split across several payables) share a batch → shown as one transaction. */
   batch?: string;
 }
 
-/** Một khoản thu nhập: lương, thưởng, được cho… (khác tiền người khác trả lại = settlements). */
+/** One income: salary, bonus, gifts… (different from money others pay back = settlements). */
 export interface Income extends Base {
   date: string; // YYYY-MM-DD
-  categoryId: string; // danh mục thu (con nếu có)
+  categoryId: string; // income category (subcategory if any)
   amount: number;
   title: string;
-  personId: string | null; // người cho, ví dụ Mẹ; null = không gắn người
-  /** Phần dư người đó cho luôn khi trả tiền (UC-09): gắn với lần nhận, xóa lần nhận thì xóa theo. */
+  personId: string | null; // giver, e.g. Mom; null = no person
+  /** Surplus the person gave away when paying (UC-09): tied to that payment; deleting the payment deletes it. */
   settlementId?: string | null;
 }
 
@@ -158,34 +158,34 @@ export interface Settings {
   monthEndNote: boolean;
   autoApplyCredit: boolean;
   seeded: boolean;
-  /** Kỳ gần nhất đã chạy ghi chú cuối tháng (YYYY-MM). */
+  /** Latest period for which the month-end note ran (YYYY-MM). */
   lastMonthEnd?: string;
-  /** Lần sao lưu gần nhất (ISO), để nhắc khi quá 7 ngày (NFR-04). */
+  /** Last backup (ISO), to remind after 7 days (NFR-04). */
   lastBackupAt?: string;
-  /** Số dư ban đầu: số tiền đang có tại ngày openingDate (bắt đầu tính số dư). */
+  /** Opening balance: money on hand at openingDate (where the balance starts). */
   openingBalance?: number;
   openingDate?: string;
-  /** Đã tạo danh mục thu mặc định (cho dữ liệu cũ nâng cấp lên). */
+  /** Default income categories created (for upgraded old data). */
   incomeSeeded?: boolean;
-  /** Đã tạo danh mục Hóa đơn mặc định (cho dữ liệu cũ). */
+  /** Default Bills category created (for old data). */
   billsSeeded?: boolean;
-  /** Đã tạo "Chuyển tiền › Thanh toán hộ" (cho dữ liệu cũ). */
+  /** "Chuyển tiền › Thanh toán hộ" created (for old data). */
   payForSeeded?: boolean;
-  /** Ẩn số nhạy cảm (thu nhập, số dư, còn lại) mỗi lần mở app; không có = true. */
+  /** Hide sensitive amounts (income, balances, left over) on every app open; missing = true. */
   hideOnOpen?: boolean;
-  /** Lần đổi gần nhất của các cài đặt được đồng bộ giữa các trình duyệt (SYNCED_SETTINGS). */
+  /** Last change of the settings that are synced between browsers (SYNCED_SETTINGS). */
   syncUpdatedAt?: string;
 }
 
-/** Cài đặt dùng chung giữa các trình duyệt; phần còn lại (giao diện, ẩn số, sao lưu, cờ tạo dữ liệu mặc định) là của riêng từng máy. */
+/** Settings shared between browsers; the rest (theme, hide amounts, backups, seed flags) belongs to each browser. */
 export const SYNCED_SETTINGS = ['monthStartDay', 'monthEndNote', 'autoApplyCredit', 'openingBalance', 'openingDate'] as const;
 
-/** Bảng được đồng bộ (theo thứ tự ghi: bảng được tham chiếu trước). */
+/** Synced tables (in write order: referenced tables first). */
 export const SYNC_TABLES = ['people', 'groups', 'groupMembers', 'categories', 'tags', 'categoryTags', 'transactions', 'transactionTags',
   'shares', 'settlements', 'allocations', 'monthNotes', 'incomes', 'payables', 'repayments'] as const;
 export type SyncTable = (typeof SYNC_TABLES)[number];
 
-/** Dữ liệu riêng của trình duyệt này (không sao lưu, không đồng bộ): mã máy, các máy đã đồng bộ, đồng hồ. */
+/** Data private to this browser (not backed up, not synced): device id, synced browsers, clock. */
 export interface Meta { key: string; value: unknown }
 
 export class FintoDB extends Dexie {
@@ -206,7 +206,7 @@ export class FintoDB extends Dexie {
   repayments!: EntityTable<Repayment, 'id'>;
   settings!: EntityTable<Settings, 'id'>;
   meta!: EntityTable<Meta, 'key'>;
-  /** Số thứ tự ghi trên máy này: mỗi bản ghi mang _seq của lần ghi cuối, để gói đồng bộ chỉ chứa phần thay đổi. */
+  /** Local write sequence: every record carries the _seq of its last write, so sync packages only contain changes. */
   seq = 0;
 
   constructor(name = 'hihand-finto') {
@@ -226,16 +226,16 @@ export class FintoDB extends Dexie {
       monthNotes: 'id, [personId+month], updatedAt',
       settings: 'id',
     });
-    // v2: thu nhập. Bảng cũ giữ nguyên; danh mục thu được tạo bằng seedIncomeCategories.
+    // v2: incomes. Existing tables unchanged; income categories are created by seedIncomeCategories.
     this.version(2).stores({
       incomes: 'id, date, categoryId, personId, updatedAt',
     });
-    // v3: công nợ hai chiều (khoản tôi nợ + các lần trả / xóa nợ).
+    // v3: two-way debts (payables + repayments / waivers).
     this.version(3).stores({
       payables: 'id, personId, date, updatedAt',
       repayments: 'id, personId, payableId, incomeId, date, updatedAt',
     });
-    // v4: đồng bộ giữa các trình duyệt — chỉ mục _seq cho mọi bảng đồng bộ + bảng meta riêng của máy.
+    // v4: sync between browsers — _seq index on every synced table + a per-browser meta table.
     this.version(4).stores({
       ...Object.fromEntries(SYNC_TABLES.map((t) => [t, `${STORES[t]}, _seq`])),
       meta: 'key',
@@ -248,7 +248,7 @@ export class FintoDB extends Dexie {
       this.table(t).hook('creating', (_pk, obj: { _seq?: number }) => { obj._seq = ++this.seq; });
       this.table(t).hook('updating', () => ({ _seq: ++this.seq }));
     }
-    // Đổi cài đặt dùng chung → đánh dấu thời điểm để gộp (bản mới hơn thắng).
+    // A shared setting changed → stamp the time for merging (newer wins).
     this.settings.hook('updating', (mods) => {
       const m = mods as Record<string, unknown>;
       if (SYNCED_SETTINGS.some((k) => k in m) && !('syncUpdatedAt' in m)) return { syncUpdatedAt: now() };
@@ -264,7 +264,7 @@ export class FintoDB extends Dexie {
   }
 }
 
-/** Chỉ mục của từng bảng (giữ nguyên như các bản trước, thêm _seq ở v4). */
+/** Indexes of each table (unchanged from earlier versions; _seq added in v4). */
 const STORES: Record<SyncTable, string> = {
   people: 'id, name, updatedAt',
   groups: 'id, updatedAt',
@@ -286,8 +286,8 @@ const STORES: Record<SyncTable, string> = {
 export const db = new FintoDB();
 
 /**
- * Đồng hồ không lùi: luôn lớn hơn mọi mốc thời gian đã thấy (kể cả từ máy khác khi đồng bộ),
- * để lần sửa sau trên máy này luôn "mới hơn" dù đồng hồ hai máy lệch nhau.
+ * Monotonic clock: always later than any timestamp seen so far (including from other browsers when syncing),
+ * so the next edit on this browser is always "newer" even if the two clocks disagree.
  */
 let lastMs = 0;
 export const observeClock = (iso: string) => {

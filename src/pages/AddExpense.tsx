@@ -7,7 +7,7 @@ import { today } from '../domain/period';
 import { parseAmount, splitEqual, splitRemaining, type Participant, type ShareDraft } from '../domain/split';
 import { creditOf, owedTo, rootOf, type Index } from '../domain/stats';
 import { useIndex } from '../ui/data';
-import { Avatar, Icon, Segmented } from '../ui/kit';
+import { AmountKeys, Avatar, Icon, Segmented } from '../ui/kit';
 import { money, short, useMask, useRun, useToast } from '../ui/format';
 import { CategoryPicker, TagPicker } from '../ui/pickers';
 import { PAY_FOR } from '../db/seed';
@@ -18,11 +18,11 @@ interface Part { personId: string; type: Exclude<ShareType, 'mine'>; amountText:
 
 const toText = (n: number) => (n ? n.toLocaleString('vi-VN') : '');
 
-/** Giá trị ban đầu của form: trống, hoặc chép từ giao dịch khi Nhân bản (BR-11). */
+/** Initial form values: empty, or copied from a transaction when duplicating (BR-11). */
 function initial(ix: Index, copyId: string | null, proxyFor: string | null) {
   const src = copyId ? ix.tx.get(copyId) : undefined;
   if (!src && proxyFor !== null) {
-    // UC-12: chi hộ — mặc định danh mục Hóa đơn, không có phần của tôi.
+    // UC-12: pay on behalf — Bills category by default, no share of mine.
     const bills = ix.roots.find((c) => c.name === 'Hóa đơn');
     return {
       amountText: '', kind: 'expense' as TxKind, rootId: bills?.id ?? ix.roots[0]?.id ?? '', subId: '', tags: [] as string[], title: '', product: '',
@@ -72,7 +72,7 @@ export default function AddExpense() {
 
 type AddKind = TxKind | 'proxy' | 'income';
 
-/** Khoản chi / Chuyển tiền / Chi hộ / Thu nhập. Thu nhập là form riêng nên đổi qua lại bằng đường dẫn. */
+/** Expense / Transfer / Pay on behalf / Income. Income is a separate form, so switching uses the URL. */
 function KindSwitch({ value, onChange }: { value: AddKind; onChange?: (k: TxKind | 'proxy') => void }) {
   const nav = useNavigate();
   return (
@@ -101,7 +101,7 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
   const [myText, setMyText] = useState(init.myText);
   const [parts, setParts] = useState<Part[]>(init.parts);
   const [mode, setMode] = useState<SplitMode>(init.mode);
-  /** Cách xử lý phần Đòi lại của từng người: trừ tiền giữ → cấn trừ khoản tôi nợ → còn lại để nợ / cho luôn. */
+  /** How each person's Owed share is handled: held money → offset what I owe → the rest stays owed / is given. */
   const [opts, setOpts] = useState<Record<string, PersonSettle>>({});
   const [newName, setNewName] = useState('');
   const [saving, setSaving] = useState(false);
@@ -132,7 +132,7 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
   const optOf = (id: string): Required<PersonSettle> => ({ credit: opts[id]?.credit ?? (proxy || defaultApply), offset: opts[id]?.offset ?? true, rest: opts[id]?.rest ?? 'owe' });
   const setOpt = (id: string, patch: PersonSettle) => setOpts((o) => ({ ...o, [id]: { ...o[id], ...patch } }));
 
-  // Chi hộ: hai danh mục hay dùng — trả hóa đơn giúp, hoặc chuyển tiền thanh toán thay người đó.
+  // Pay on behalf: two common categories — paying a bill for them, or a transfer paying someone on their behalf.
   const bills = ix.roots.find((c) => c.name === 'Hóa đơn');
   const transfer = ix.roots.find((c) => c.name === 'Chuyển tiền');
   const payFor = transfer ? (ix.childrenOf.get(transfer.id) ?? []).find((c) => c.name === PAY_FOR) : undefined;
@@ -146,8 +146,8 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
     setSubId('');
     setTags([]);
     const root = ix.category.get(id);
-    // Danh mục không tính vào Chi của tôi (Chuyển tiền) → mặc định là chuyển tiền (RULE-04).
-    // Đang chi hộ thì giữ nguyên chi hộ (ví dụ Chuyển tiền › Thanh toán hộ).
+    // Categories that do not count as my spending (Chuyển tiền) → default to a transfer (RULE-04).
+    // While paying on behalf, stay in that mode (e.g. Chuyển tiền › Thanh toán hộ).
     if (proxy) return;
     if (root && !root.countsAsMine) switchKind('transfer');
     else if (isTransfer) switchKind('expense');
@@ -155,7 +155,7 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
 
   const switchKind = (k: TxKind | 'proxy') => {
     if (k === 'proxy') {
-      // UC-12: chi hộ — bỏ phần của tôi, mọi người là Đòi lại (trừ vào tiền đang giữ).
+      // UC-12: pay on behalf — drop my share, everyone is Owed (from held money).
       setProxy(true);
       setKind('expense');
       setMe(false);
@@ -176,7 +176,7 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
       ? ps.filter((p) => p.personId !== id)
       : [...ps, { personId: id, type: proxy ? 'owe' : isTransfer ? 'give' : ix.person.get(id)?.defaultType ?? 'owe', amountText: '' }]);
   };
-  /** BR-18: chọn nhóm là tick sẵn cả nhóm; bấm lại để bỏ cả nhóm. */
+  /** BR-18: picking a group ticks the whole group; tap again to remove it. */
   const pickGroup = (memberIds: string[], all: boolean) => setParts((ps) => all
     ? ps.filter((p) => !memberIds.includes(p.personId))
     : [...ps, ...memberIds.filter((id) => !ps.some((p) => p.personId === id))
@@ -219,7 +219,7 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
   };
 
   const splitTitle = proxy ? 'Chi hộ cho ai?' : isTransfer ? 'Chuyển cho ai?' : `Đi cùng ai? · ${participants.length} người`;
-  /** Xem trước phần Đòi lại của từng người: trừ tiền giữ → cấn trừ khoản tôi nợ → phần còn lại. */
+  /** Preview each person's Owed share: held money → offset what I owe → the rest. */
   const settlePlan = shares.filter((s) => s.type === 'owe' && s.personId && s.amount > 0).map((s) => {
     const id = s.personId!;
     const o = optOf(id);
@@ -248,6 +248,7 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
                 value={amountText} onChange={(e) => setAmountText(e.target.value)}
                 onBlur={() => total > 0 && setAmountText(toText(total))} aria-describedby="amt-hint" />
               <span id="amt-hint" className="xs muted">{total > 0 ? `= ${money(total)}` : 'Gõ tắt: 360k, 1,5tr'}</span>
+              <AmountKeys onAdd={(k) => setAmountText((t) => t + k)} />
             </div>
             <div className="field" style={{ flex: '1 1 160px' }}>
               <label htmlFor="day">Ngày</label>
@@ -404,7 +405,7 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
             {offsetPlanned > 0 && <div className="row"><span className="c-give strong">Trả nợ (cấn trừ)</span><span className="num">{mask(money(offsetPlanned))}</span></div>}
             <div className="row"><span className="c-give strong">Cho đi</span><span className="num">{money(sums.give)}</span></div>
           </div>}
-          <div className="row nowrap">
+          <div className="row nowrap save-bar">
             <Link to="/" className="btn">Hủy</Link>
             <button type="submit" className="btn primary grow" disabled={!canSave}>{proxy ? 'Lưu chi hộ' : 'Lưu giao dịch'}</button>
           </div>
@@ -416,7 +417,7 @@ function ExpenseForm({ ix, copyId, proxyFor }: { ix: Index; copyId: string | nul
         </section>
       </div>
     </form>
-    {/* Ngoài <form> để Enter trong hộp thoại không lưu khoản chi. */}
+    {/* Outside <form> so Enter inside the dialog does not save the expense. */}
     {heldFor && <HeldModal ix={ix} personId={heldFor.id} initial="in" onClose={() => setHeldFor(null)} />}
     </>
   );

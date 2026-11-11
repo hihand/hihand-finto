@@ -3,8 +3,8 @@ import { defineConfig, type Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 /**
- * Content-Security-Policy cho bản build: app chỉ chạy mã và tải tài nguyên của chính nó,
- * không gọi máy chủ ngoài (NFR-06). Không áp dụng lúc `npm run dev` vì Vite cần script nội tuyến để tải lại nóng.
+ * Content-Security-Policy for the build: the app only runs its own code and loads its own assets,
+ * no external servers (NFR-06). Not applied in `npm run dev` because Vite needs inline scripts for hot reload.
  */
 const CSP = [
   "default-src 'self'",
@@ -32,18 +32,29 @@ export default defineConfig({
     react(),
     csp(),
     VitePWA({
-      registerType: 'autoUpdate',
-      // Lưu sẵn cả font để dùng được khi không có mạng (NFR-02).
-      workbox: { globPatterns: ['**/*.{js,css,html,svg,woff2}'] },
+      // When a new version is available, ask ("Tải lại" button) instead of reloading while the user is typing.
+      registerType: 'prompt',
+      // Precache fonts and icons too so the app works offline (NFR-02).
+      workbox: { globPatterns: ['**/*.{js,css,html,svg,woff2,png}'], cleanupOutdatedCaches: true },
       manifest: {
+        id: '/',
         name: 'Hihand Finto',
         short_name: 'Finto',
+        description: 'Quản lý chi tiêu cá nhân: chia bill, đòi lại, tiền giữ hộ, công nợ. Dữ liệu chỉ nằm trong máy bạn.',
         lang: 'vi',
         start_url: '/',
+        scope: '/',
         display: 'standalone',
+        orientation: 'portrait',
         background_color: '#15131f',
-        theme_color: '#15131f',
-        icons: [{ src: '/logo.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
+        theme_color: '#1a1726',
+        categories: ['finance', 'productivity'],
+        icons: [
+          { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          { src: '/logo.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+        ],
       },
     }),
   ],

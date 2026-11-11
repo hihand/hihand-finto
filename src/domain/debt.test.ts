@@ -25,7 +25,7 @@ const NOV = periodRange('2026-11');
 const ixParent = (x: Awaited<ReturnType<typeof ix>>, id: string) => x.category.get(id)?.name;
 const START = 1_000_000;
 
-/** Chi hộ mẹ (trả hóa đơn / chuyển cho đối tác của mẹ). */
+/** Pay on behalf of Mom (a bill / a transfer to Mom's partner). */
 const onBehalf = async (amount: number, opt?: PersonSettle, date = '2026-11-10') => saveExpense(db, {
   date, kind: 'expense', categoryId: await cat('Điện'), title: 'Chuyển cho đối tác của mẹ', totalAmount: amount, splitMode: 'custom', tagIds: [],
   shares: [{ personId: MOM, type: 'owe', amount }], onBehalf: true, perPerson: opt ? { [MOM]: opt } : undefined,
@@ -40,8 +40,8 @@ beforeEach(async () => {
   MOM = p.id;
 });
 
-describe('UC-14: số đầu kỳ', () => {
-  it('nợ mẹ 12tr từ trước: không phải thu nhập, không đổi số dư tài khoản, không trừ vào Số dư của tôi', async () => {
+describe('UC-14: opening balances', () => {
+  it('owing Mom 12M from before: not income, account balance unchanged, not deducted from My balance', async () => {
     await setOpening(db, { personId: MOM, date: '2026-11-01', held: 0, owedByMe: 12_000_000, owedToMe: 0 });
     const x = await ix();
     expect(balanceAt(x)).toBe(START);
@@ -51,7 +51,7 @@ describe('UC-14: số đầu kỳ', () => {
     expect(debtSummary(x)).toEqual([{ personId: MOM, iOwe: 12_000_000, theyOwe: 0 }]);
   });
 
-  it('đang giữ đầu kỳ nằm trong số dư ban đầu; họ nợ đầu kỳ không phải tiền ra', async () => {
+  it('opening held money is part of the opening balance; opening "they owe me" is not money out', async () => {
     await setOpening(db, { personId: MOM, date: '2026-11-01', held: 2_000_000, owedByMe: 0, owedToMe: 1_000_000 });
     const x = await ix();
     expect(balanceAt(x)).toBe(START);
@@ -59,10 +59,10 @@ describe('UC-14: số đầu kỳ', () => {
     expect(personalBalanceAt(x)).toBe(START - 2_000_000);
     expect(outstanding(x)).toMatchObject([{ personId: MOM, amount: 1_000_000 }]);
     expect(periodStats(x, NOV)).toMatchObject({ total: 0, received: 0, owe: 0, advanced: 0, net: 0 });
-    expect(x.txs).toHaveLength(0); // không hiện trong danh sách giao dịch
+    expect(x.txs).toHaveLength(0); // not shown in the transaction list
   });
 
-  it('sửa số đầu kỳ: không giảm dưới phần đã trả; về 0 khi chưa dùng thì bỏ', async () => {
+  it('editing opening balances: cannot go below what was repaid; back to 0 when unused removes it', async () => {
     await setOpening(db, { personId: MOM, date: '2026-11-01', held: 0, owedByMe: 12_000_000, owedToMe: 0 });
     await repay(db, { personId: MOM, date: '2026-11-05', amount: 5_000_000, mode: 'transfer' });
     await expect(setOpening(db, { personId: MOM, date: '2026-11-01', held: 0, owedByMe: 4_000_000, owedToMe: 0 })).rejects.toThrow();
@@ -74,10 +74,10 @@ describe('UC-14: số đầu kỳ', () => {
   });
 });
 
-describe('UC-17: chi hộ cấn trừ khoản đang nợ', () => {
+describe('UC-17: paying on behalf offsets what I owe', () => {
   beforeEach(() => setOpening(db, { personId: MOM, date: '2026-11-01', held: 0, owedByMe: 12_000_000, owedToMe: 0 }));
 
-  it('nợ 12tr, chi hộ 18tr → huề 12tr, mẹ nợ lại 6tr; bỏ qua 6tr thành Cho đi', async () => {
+  it('owe 12M, pay 18M on behalf → 12M settled, Mom owes back 6M; forgiving 6M becomes Given', async () => {
     const txId = await onBehalf(18_000_000);
     let x = await ix();
     expect(owedTo(x, MOM)).toBe(0);
@@ -85,7 +85,7 @@ describe('UC-17: chi hộ cấn trừ khoản đang nợ', () => {
     expect(balanceAt(x)).toBe(START - 18_000_000);
     expect(personalBalanceAt(x)).toBe(START - 18_000_000);
     expect(periodStats(x, NOV)).toMatchObject({ repaid: 12_000_000, repaidOld: 12_000_000, advanced: 6_000_000, owe: 6_000_000, spent: 0, net: -12_000_000 });
-    // 12tr cấn trừ là trả nợ, không nằm trong Đòi lại.
+    // the 12M offset is a repayment, not part of Owed
     expect(peopleSummary(x, 'owe')).toMatchObject([{ total: 6_000_000, waiting: 6_000_000 }]);
     expect(periodStats(x, NOV).oweByPerson[0].amount).toBe(6_000_000);
     expect(debtLedger(x, MOM).map((e) => e.balance)).toEqual([12_000_000, 0]);
@@ -95,21 +95,21 @@ describe('UC-17: chi hộ cấn trừ khoản đang nợ', () => {
     expect(openDebts(x, MOM)).toHaveLength(0);
     expect(periodStats(x, NOV)).toMatchObject({ give: 0, forgiven: 6_000_000, spent: 6_000_000, advanced: 0, net: -18_000_000 });
 
-    // Xóa khoản chi hộ: cấn trừ gỡ theo, nợ quay lại 12tr; hoàn tác thì huề lại.
+    // Deleting the on-behalf payment removes the offset, the 12M debt comes back; undo settles it again.
     const stamp = await deleteTransaction(db, txId);
     expect(await owedOf(db, MOM)).toBe(12_000_000);
     await restoreTransaction(db, txId, stamp);
     expect(await owedOf(db, MOM)).toBe(0);
   });
 
-  it('chọn "Cho mẹ luôn" phần còn lại ngay lúc chi hộ', async () => {
+  it('choosing "Give it to Mom" for the rest while paying on behalf', async () => {
     await onBehalf(18_000_000, { rest: 'give' });
     const x = await ix();
     expect(openDebts(x, MOM)).toHaveLength(0);
     expect(periodStats(x, NOV)).toMatchObject({ repaid: 12_000_000, forgiven: 6_000_000, spent: 6_000_000, advanced: 0 });
   });
 
-  it('thứ tự trừ: tiền đang giữ → cấn trừ → mẹ nợ lại', async () => {
+  it('deduction order: held money → offset → Mom owes the rest', async () => {
     await setOpening(db, { personId: MOM, date: '2026-11-01', held: 3_000_000, owedByMe: 12_000_000, owedToMe: 0 });
     await onBehalf(18_000_000);
     const x = await ix();
@@ -119,13 +119,13 @@ describe('UC-17: chi hộ cấn trừ khoản đang nợ', () => {
     expect(periodStats(x, NOV)).toMatchObject({ repaid: 12_000_000, advanced: 3_000_000 });
   });
 
-  it('bỏ tick cấn trừ: hai khoản tách riêng, sau đó cấn trừ thủ công (hoàn tác được)', async () => {
+  it('unticking offset: two separate debts, then a manual offset (undoable)', async () => {
     await onBehalf(2_000_000, { offset: false });
     expect(await owedOf(db, MOM)).toBe(12_000_000);
     expect(openDebts(await ix(), MOM)[0].remaining).toBe(2_000_000);
     const ids = await offsetDebts(db, MOM, '2026-11-15');
     const x = await ix();
-    expect(peopleSummary(x, 'owe')).toHaveLength(0); // cấn trừ hết → không còn là Đòi lại
+    expect(peopleSummary(x, 'owe')).toHaveLength(0); // fully offset → no longer Owed
     expect(owedTo(x, MOM)).toBe(10_000_000);
     expect(openDebts(x, MOM)).toHaveLength(0);
     expect(periodStats(x, NOV).repaid).toBe(2_000_000);
@@ -133,7 +133,7 @@ describe('UC-17: chi hộ cấn trừ khoản đang nợ', () => {
     expect(await owedOf(db, MOM)).toBe(12_000_000);
   });
 
-  it('bữa ăn chia bill: phần của mẹ cấn trừ vào khoản đang nợ', async () => {
+  it('split meal: Mom\'s share is offset against what I owe', async () => {
     await saveExpense(db, {
       date: '2026-11-08', kind: 'expense', categoryId: await cat('Bữa chính'), title: 'Ăn tối', totalAmount: 600_000, splitMode: 'equal', tagIds: [],
       shares: [{ personId: null, type: 'mine', amount: 300_000 }, { personId: MOM, type: 'owe', amount: 300_000 }],
@@ -142,12 +142,12 @@ describe('UC-17: chi hộ cấn trừ khoản đang nợ', () => {
   });
 });
 
-describe('UC-16: trả nợ từ thu nhập', () => {
+describe('UC-16: repaying from income', () => {
   beforeEach(() => setOpening(db, { personId: MOM, date: '2026-11-01', held: 0, owedByMe: 12_000_000, owedToMe: 0 }));
   const income = (repayIt?: { amount: number; mode?: 'hold' | 'transfer' }) => salary().then((c) => saveIncome(db,
     { date: '2026-11-05', categoryId: c, amount: 20_000_000, title: 'Lương', personId: null }, repayIt && { personId: MOM, ...repayIt }));
 
-  it('giữ lại cho mẹ (hold): tài khoản giữ nguyên tiền, thành tiền đang giữ; Còn lại và Số dư của tôi giảm', async () => {
+  it('keep for Mom (hold): money stays in the account as held money; Left over and My balance go down', async () => {
     await income({ amount: 12_000_000 });
     const x = await ix();
     expect(owedTo(x, MOM)).toBe(0);
@@ -156,7 +156,7 @@ describe('UC-16: trả nợ từ thu nhập', () => {
     expect(personalBalanceAt(x)).toBe(START + 8_000_000);
     expect(periodStats(x, NOV)).toMatchObject({ income: 20_000_000, repaid: 12_000_000, net: 8_000_000, spent: 0 });
 
-    // Sau đó chuyển 12tr này cho mẹ: không tính tiền ra lần nữa.
+    // Then transfer that 12M to Mom: not counted as money out again.
     await returnCredit(db, MOM, 12_000_000, '2026-11-06');
     const y = await ix();
     expect(balanceAt(y)).toBe(START + 8_000_000);
@@ -164,7 +164,7 @@ describe('UC-16: trả nợ từ thu nhập', () => {
     expect(periodStats(y, NOV).net).toBe(8_000_000);
   });
 
-  it('chuyển khoản (transfer): tài khoản giảm; kết quả Số dư của tôi như hold', async () => {
+  it('bank transfer (transfer): account goes down; My balance ends the same as hold', async () => {
     await income({ amount: 12_000_000, mode: 'transfer' });
     const x = await ix();
     expect(balanceAt(x)).toBe(START + 8_000_000);
@@ -173,7 +173,7 @@ describe('UC-16: trả nợ từ thu nhập', () => {
     expect(periodStats(x, NOV).net).toBe(8_000_000);
   });
 
-  it('xóa thu nhập thì lần trả nợ xóa theo; hoàn tác thì trả lại; không giảm thu nhập dưới số đã trả nợ', async () => {
+  it('deleting the income deletes its repayment; undo brings it back; income cannot go below what it repaid', async () => {
     const id = await income({ amount: 12_000_000 });
     await expect(updateIncome(db, id, { date: '2026-11-05', categoryId: await salary(), amount: 10_000_000, title: 'Lương', personId: null })).rejects.toThrow();
     const stamp = await deleteIncome(db, id);
@@ -183,7 +183,7 @@ describe('UC-16: trả nợ từ thu nhập', () => {
     expect(await owedOf(db, MOM)).toBe(0);
   });
 
-  it('không trả vượt số nợ / vượt khoản thu; tiền giữ lại đã chi hộ thì không xóa lần trả được', async () => {
+  it('cannot repay more than owed / more than the income; a hold repayment already spent on behalf cannot be deleted', async () => {
     await expect(income({ amount: 13_000_000 })).rejects.toThrow();
     await expect(salary().then((c) => saveIncome(db, { date: '2026-11-05', categoryId: c, amount: 1_000_000, title: '', personId: null }, { personId: MOM, amount: 2_000_000 }))).rejects.toThrow();
     const ids = await repay(db, { personId: MOM, date: '2026-11-05', amount: 5_000_000 });
@@ -193,8 +193,8 @@ describe('UC-16: trả nợ từ thu nhập', () => {
   });
 });
 
-describe('UC-18 / UC-19: xóa nợ hai chiều', () => {
-  it('mẹ xóa khoản nợ đầu kỳ: không phải thu nhập, Số dư của tôi không đổi', async () => {
+describe('UC-18 / UC-19: forgiving debts both ways', () => {
+  it('Mom forgives the opening debt: not income, My balance unchanged', async () => {
     await setOpening(db, { personId: MOM, date: '2026-11-01', held: 0, owedByMe: 12_000_000, owedToMe: 0 });
     await waiveDebt(db, { personId: MOM, date: '2026-11-20', amount: 12_000_000 });
     const x = await ix();
@@ -203,20 +203,20 @@ describe('UC-18 / UC-19: xóa nợ hai chiều', () => {
     expect(periodStats(x, NOV)).toMatchObject({ waived: 12_000_000, waivedNew: 0, net: 0, income: 0 });
   });
 
-  it('tôi xóa nợ cho mẹ: khoản phát sinh trong app tính vào chi tiêu; khoản đầu kỳ thì không', async () => {
+  it('I forgive Mom: in-app debts count as spending; opening ones do not', async () => {
     await setOpening(db, { personId: MOM, date: '2026-11-01', held: 0, owedByMe: 0, owedToMe: 1_000_000 });
     await onBehalf(500_000); // trong app
-    await forgiveAll(db, MOM, 1_500_000, '2026-11-20'); // cũ nhất trước: 1tr đầu kỳ rồi 500k
+    await forgiveAll(db, MOM, 1_500_000, '2026-11-20'); // oldest first: 1M opening, then 500k
     const x = await ix();
     expect(openDebts(x, MOM)).toHaveLength(0);
     expect(periodStats(x, NOV)).toMatchObject({ forgiven: 500_000, forgivenOld: 1_000_000, spent: 500_000, net: -500_000 });
-    expect(peopleSummary(x, 'give')[0].total).toBe(1_500_000); // cả hai đều hiện là Cho đi
+    expect(peopleSummary(x, 'give')[0].total).toBe(1_500_000); // both show as Given
     await expect(forgiveAll(db, MOM, 1, '2026-11-20')).rejects.toThrow();
   });
 });
 
-describe('UC-15: nợ phát sinh trong app', () => {
-  it('vay mới 5tr: tiền vào không phải thu nhập, Số dư của tôi không đổi; trả lại không trừ Còn lại', async () => {
+describe('UC-15: debts created in the app', () => {
+  it('new 5M loan: money in is not income, My balance unchanged; repaying it does not reduce Left over', async () => {
     await borrow(db, { personId: MOM, date: '2026-11-03', amount: 5_000_000 });
     let x = await ix();
     expect(balanceAt(x)).toBe(START + 5_000_000);
@@ -230,7 +230,7 @@ describe('UC-15: nợ phát sinh trong app', () => {
     expect(periodStats(x, NOV)).toMatchObject({ repaid: 5_000_000, repaidOld: 0, net: 0 });
   });
 
-  it('tiêu mất 3tr tiền đang giữ → chuyển thành khoản tôi nợ; mẹ xóa khoản đó thì tính như được cho', async () => {
+  it('spent 3M of held money → turned into a debt; Mom forgiving it counts like a gift', async () => {
     await setOpening(db, { personId: MOM, date: '2026-11-01', held: 5_000_000, owedByMe: 0, owedToMe: 0 });
     await saveExpense(db, {
       date: '2026-11-04', kind: 'expense', categoryId: await cat('Bữa chính'), title: 'Tự tiêu', totalAmount: 3_000_000, splitMode: 'equal', tagIds: [],
@@ -251,10 +251,10 @@ describe('UC-15: nợ phát sinh trong app', () => {
     expect(periodStats(x, NOV)).toMatchObject({ waivedNew: 3_000_000, spent: 3_000_000, net: 0 });
   });
 
-  it('số dư cuối kỳ: nợ còn lại tại một ngày', async () => {
+  it('end-of-period balance: debt remaining at a date', async () => {
     await setOpening(db, { personId: MOM, date: '2026-11-01', held: 0, owedByMe: 12_000_000, owedToMe: 0 });
     await repay(db, { personId: MOM, date: '2026-11-10', amount: 2_000_000 });
-    await onBehalf(1_000_000, { credit: false }, '2026-11-20'); // bỏ tick trừ tiền giữ → cấn trừ nợ
+    await onBehalf(1_000_000, { credit: false }, '2026-11-20'); // untick held money → offset the debt
     const x = await ix();
     expect(owedAt(x, '2026-11-10').total).toBe(12_000_000);
     expect(owedAt(x, '2026-11-11').total).toBe(10_000_000);
@@ -262,8 +262,8 @@ describe('UC-15: nợ phát sinh trong app', () => {
   });
 });
 
-describe('Trả nợ là một giao dịch', () => {
-  it('một lần trả chia vào 2 khoản nợ vẫn là 1 giao dịch; được xóa nợ không phải giao dịch; xóa / hoàn tác', async () => {
+describe('A repayment is one transaction', () => {
+  it('one repayment split across 2 payables is still 1 transaction; a waiver is not a transaction; delete / undo', async () => {
     await setOpening(db, { personId: MOM, date: '2026-11-01', held: 0, owedByMe: 3_000_000, owedToMe: 0 });
     await borrow(db, { personId: MOM, date: '2026-11-02', amount: 2_000_000 });
     await repay(db, { personId: MOM, date: '2026-11-10', amount: 4_000_000, mode: 'transfer', note: 'tháng 11' });
@@ -282,8 +282,8 @@ describe('Trả nợ là một giao dịch', () => {
   });
 });
 
-describe('Danh mục Chuyển tiền › Thanh toán hộ', () => {
-  it('sổ mới có đúng một danh mục; sổ cũ được thêm một lần', async () => {
+describe('Category Chuyển tiền › Thanh toán hộ', () => {
+  it('a new ledger has exactly one such category; an old ledger gets it added once', async () => {
     const find = async () => (await db.categories.toArray()).filter((c) => !c.deletedAt && c.name === PAY_FOR);
     expect(await find()).toHaveLength(1);
     const [c] = await find();
@@ -296,7 +296,7 @@ describe('Danh mục Chuyển tiền › Thanh toán hộ', () => {
     expect(ixParent(await ix(), again[0].parentId!)).toBe('Chuyển tiền');
   });
 
-  it('chi hộ vào Thanh toán hộ: vẫn cấn trừ khoản đang nợ, không tính vào chi tiêu của tôi', async () => {
+  it('paying on behalf under Thanh toán hộ: still offsets what I owe, not counted as my spending', async () => {
     await setOpening(db, { personId: MOM, date: '2026-11-01', held: 0, owedByMe: 12_000_000, owedToMe: 0 });
     const payFor = (await db.categories.filter((c) => c.name === PAY_FOR).first())!;
     await saveExpense(db, {

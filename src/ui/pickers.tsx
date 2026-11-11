@@ -36,13 +36,13 @@ export function CategoryPicker({ ix, rootId, subId, onRoot, onSub, income }: {
   );
 }
 
-/** BR-02: tag hiện theo danh mục chính đang chọn, chọn nhiều, thêm tag ngay khi nhập. */
+/** BR-02: tags follow the selected top-level category, multi-select, add a tag while entering. */
 export function TagPicker({ ix, rootId, value, onChange }: { ix: Index; rootId: string; value: string[]; onChange: (ids: string[]) => void }) {
   const run = useRun();
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState('');
   const own = ix.tagsOfCategory.get(rootId) ?? [];
-  // Tag đã gắn nhưng không thuộc danh mục này (khi sửa/đổi danh mục) vẫn hiện để bỏ chọn được.
+  // Tags already attached but not in this category (when editing / changing category) are still shown so they can be removed.
   const extra = value.filter((id) => !own.some((t) => t.id === id)).flatMap((id) => (ix.tag.get(id) ? [ix.tag.get(id)!] : []));
   const toggle = (id: string) => onChange(value.includes(id) ? value.filter((x) => x !== id) : [...value, id]);
   const add = async () => {

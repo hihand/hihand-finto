@@ -3,9 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover: in full screen on iPhone, the app leaves room for the notch / home bar (env(safe-area-inset-*)). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Hihand Finto</title>
-    <meta name="theme-color" content="#15131f" />
+    <meta name="description" content="Quản lý chi tiêu cá nhân: chia bill, đòi lại, tiền giữ hộ, công nợ. Dữ liệu chỉ nằm trong máy bạn." />
+    <meta name="theme-color" content="#1c1929" />
+    <!-- Install to the home screen (iOS / Android) -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Finto" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-startup-image" href="/splash-1170x2532.png"
+      media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
   </head>
   <body>
     <div id="root"></div>

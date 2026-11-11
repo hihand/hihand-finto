@@ -6,7 +6,7 @@ import { Modal } from './kit';
 import { money, useRun } from './format';
 import { CategoryPicker, TagPicker } from './pickers';
 
-/** RULE-09: chỉ sửa ngày, danh mục, tag, ghi chú, tên sản phẩm. */
+/** RULE-09: only date, category, tags, note and product name can be edited. */
 export default function EditTx({ ix, tx, onClose }: { ix: Index; tx: Transaction; onClose: () => void }) {
   const run = useRun();
   const cur = ix.category.get(tx.categoryId);

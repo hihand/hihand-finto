@@ -3,11 +3,11 @@ import type { MonthPoint } from '../domain/stats';
 import { money, short, useMask, usePrivacy } from './format';
 
 const H = 200;
-/** Nhãn trục gọn: 204.545 → "205k", 15.000.000 → "15tr". */
+/** Compact axis labels: 204.545 → "205k", 15.000.000 → "15tr". */
 const k = (v: number) => (v >= 1_000_000 ? short(Math.round(v / 100_000) * 100_000) : `${Math.round(v / 1000)}k`);
 
 /**
- * BR-17 + BR-22: mỗi tháng 2 cột — Thu nhập và Chi tiêu của tôi; rê chuột xem Còn lại; bấm cột mở tháng đó.
+ * BR-17 + BR-22: two bars per month — Income and My spending; hover to see Left over; click a bar to open that month.
  */
 export default function YearChart({ months, current, onOpen }: {
   months: MonthPoint[]; current: string; onOpen: (month: string) => void;
@@ -15,7 +15,7 @@ export default function YearChart({ months, current, onOpen }: {
   const [hover, setHover] = useState<number | null>(null);
   const { hidden } = usePrivacy();
   const mask = useMask();
-  // Chế độ ẩn: bỏ cột thu nhập, thang đo chỉ theo tiền ra.
+  // Privacy mode: drop the income bars, scale only by money out.
   const max = Math.max(1, ...months.map((m) => Math.max(hidden ? 0 : m.income, m.spent)));
   const nice = (() => {
     const p = 10 ** Math.floor(Math.log10(max));

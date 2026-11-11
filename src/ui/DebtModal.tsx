@@ -23,8 +23,8 @@ const HINT: Record<Exclude<DebtMode, 'book' | 'opening'>, string> = {
 };
 
 /**
- * UC-14..19: công nợ hai chiều với một người — sổ nợ, số đầu kỳ, trả nợ, được xóa nợ, xóa nợ cho họ, cấn trừ, vay, ứng tiền giữ.
- * Không truyền `personId` thì cho chọn người trước.
+ * UC-14..19: two-way debts with one person — debt book, opening amounts, repay, waived, forgive them, offset, borrow, spent held money.
+ * Without `personId`, pick a person first.
  */
 export default function DebtModal({ ix, personId: initialPerson, initial = 'book', onClose }: {
   ix: Index; personId: string | null; initial?: DebtMode; onClose: () => void;

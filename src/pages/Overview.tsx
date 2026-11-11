@@ -5,9 +5,11 @@ import { balanceAt, creditOf, debtSummary, outstanding, owedAt, periodStats, per
 import { useIndex } from '../ui/data';
 import { Avatar, Empty, Icon, SplitBar } from '../ui/kit';
 import { money, short, txTitle, useMask, usePrivacy, useRun } from '../ui/format';
-import { downloadBackup } from '../ui/download';
+import { useBackup } from '../ui/download';
 import { backupOverdueDays } from '../domain/monthEnd';
 import { IncomeRow, RepayRow, TxRow } from '../ui/tx';
+import { InstallBanner } from '../ui/AppBanners';
+import { isIOS } from '../ui/platform';
 
 const holdingSum = (ix: Index) => ix.people.reduce((a, p) => a + creditOf(ix, p.id), 0);
 
@@ -18,6 +20,7 @@ export default function Overview() {
   const [openGive, setOpenGive] = useState<string | null>(null);
   const [later, setLater] = useState(false);
   const run = useRun();
+  const backup = useBackup();
   const mask = useMask();
   const { hidden } = usePrivacy();
   if (!ix) return <p className="muted">Đang tải…</p>;
@@ -40,7 +43,8 @@ export default function Overview() {
   const owed = owedAt(ix);
   const iOweList = debtSummary(ix).filter((d) => d.iOwe > 0);
   const firstData = ix.txs.reduce<string | undefined>((a, t) => (!a || t.createdAt < a ? t.createdAt : a), undefined);
-  const overdue = later ? 0 : backupOverdueDays(ix.snap.settings?.lastBackupAt, firstData);
+  // iPhone: web data is more easily evicted → remind to back up after 3 days instead of 7.
+  const overdue = later ? 0 : backupOverdueDays(ix.snap.settings?.lastBackupAt, firstData, undefined, isIOS() ? 3 : 7);
 
   return (
     <>
@@ -56,11 +60,12 @@ export default function Overview() {
             <span className="sr-only">Tìm giao dịch</span>
             <input className="input" placeholder="Tìm giao dịch, người, tag…" value={q} onChange={(e) => setQ(e.target.value)} />
           </label>
-          <Link to="/them?loai=thu" className="btn" style={{ color: 'var(--income)' }}><Icon name="plus" size={18} stroke={2.5} />Thu nhập</Link>
-          <Link to="/them" className="btn primary"><Icon name="plus" size={18} stroke={2.5} />Thêm chi tiêu</Link>
+          <Link to="/them?loai=thu" className="btn hide-sm" style={{ color: 'var(--income)' }}><Icon name="plus" size={18} stroke={2.5} />Thu nhập</Link>
+          <Link to="/them" className="btn primary hide-sm"><Icon name="plus" size={18} stroke={2.5} />Thêm chi tiêu</Link>
         </form>
       </div>
 
+      <InstallBanner />
       {overdue > 0 && (
         <div className="banner" role="status">
           <span className="grow">
@@ -68,7 +73,7 @@ export default function Overview() {
             Dữ liệu chỉ nằm trong trình duyệt này; xóa dữ liệu trình duyệt là mất.
           </span>
           <button type="button" className="btn sm" onClick={() => setLater(true)}>Để sau</button>
-          <button type="button" className="btn sm primary" onClick={() => run(downloadBackup, 'Đã tải file sao lưu')}>Sao lưu ngay</button>
+          <button type="button" className="btn sm primary" onClick={() => run(backup)}>Sao lưu ngay</button>
         </div>
       )}
 

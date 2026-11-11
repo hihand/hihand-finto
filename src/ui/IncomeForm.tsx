@@ -6,12 +6,12 @@ import { today } from '../domain/period';
 import { parseAmount } from '../domain/split';
 import { owedTo, rootOf, type Index } from '../domain/stats';
 import { money, useMask, useRun } from './format';
-import { Avatar, Segmented, Switch } from './kit';
+import { AmountKeys, Avatar, Segmented, Switch } from './kit';
 import { CategoryPicker } from './pickers';
 
 const toText = (n: number) => (n ? n.toLocaleString('vi-VN') : '');
 
-/** BR-20: nhập / sửa một khoản thu nhập. `src` có id + `edit` = sửa; không có `edit` = nhân bản. */
+/** BR-20: add / edit an income. `src` with id + `edit` = edit; without `edit` = duplicate. */
 export default function IncomeForm({ ix, src, edit, onDone, header }: {
   ix: Index; src?: Income; edit?: boolean; onDone: () => void; header?: ReactNode;
 }) {
@@ -27,7 +27,7 @@ export default function IncomeForm({ ix, src, edit, onDone, header }: {
   const [newName, setNewName] = useState('');
   const [saving, setSaving] = useState(false);
   const amount = parseAmount(amountText);
-  // UC-16: dùng luôn một phần thu nhập để trả nợ (chỉ khi ghi mới).
+  // UC-16: use part of the income right away to repay a debt (new incomes only).
   const creditors = edit ? [] : ix.people.map((p) => ({ p, owed: owedTo(ix, p.id) })).filter((x) => x.owed > 0);
   const [repayOn, setRepayOn] = useState(false);
   const [repayTo, setRepayTo] = useState(creditors[0]?.p.id ?? '');
@@ -36,7 +36,7 @@ export default function IncomeForm({ ix, src, edit, onDone, header }: {
   const owedSel = creditors.find((c) => c.p.id === repayTo)?.owed ?? 0;
   const repayAmt = repayOn ? (repayText.trim() ? parseAmount(repayText) : Math.min(owedSel, amount)) : 0;
   const repayBad = repayOn && (repayAmt <= 0 || repayAmt > owedSel || repayAmt > amount);
-  /** Phần “cho luôn” của một lần nhận: số tiền và người cho gắn với lần nhận đó, không sửa ở đây. */
+  /** A gifted surplus of a payment: its amount and giver are tied to that payment and are not edited here. */
   const linked = !!(edit && src?.settlementId);
   const people = ix.people.filter((p) => !p.archived || p.id === personId);
   const canSave = amount > 0 && !!rootId && !saving && !repayBad;
@@ -66,6 +66,7 @@ export default function IncomeForm({ ix, src, edit, onDone, header }: {
           <label htmlFor="inc-amt">Số tiền nhận được</label>
           <input id="inc-amt" className="input big c-income" inputMode="decimal" autoComplete="off" autoFocus placeholder="15tr"
             value={amountText} onChange={(e) => setAmountText(e.target.value)} onBlur={() => amount > 0 && setAmountText(toText(amount))} aria-describedby="inc-hint" readOnly={linked} />
+          {!linked && <AmountKeys onAdd={(k) => setAmountText((t) => t + k)} />}
           <span id="inc-hint" className="xs muted">{linked ? 'Phần cho luôn khi trả tiền: muốn đổi số tiền hãy xóa lần nhận và ghi lại' : amount > 0 ? `= ${money(amount)}` : 'Gõ tắt: 15tr, 500k'}</span>
         </div>
         <div className="field" style={{ flex: '1 1 160px' }}>
@@ -133,7 +134,7 @@ export default function IncomeForm({ ix, src, edit, onDone, header }: {
           )}
         </div>
       )}
-      <div className="row" style={{ justifyContent: 'flex-end' }}>
+      <div className="row save-bar" style={{ justifyContent: 'flex-end' }}>
         <button type="button" className="btn" onClick={onDone}>Hủy</button>
         <button type="submit" className="btn primary" disabled={!canSave}>{edit ? 'Lưu' : 'Lưu thu nhập'}</button>
       </div>

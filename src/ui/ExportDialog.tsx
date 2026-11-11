@@ -3,15 +3,14 @@ import { exportSheets } from '../domain/export';
 import { fmtDate, monthLabel, periodOf, periodRange, shiftMonth, today } from '../domain/period';
 import type { Index } from '../domain/stats';
 import { buildXlsx } from '../lib/xlsx';
-import { saveBlob } from './download';
-import { useToast } from './format';
+import { useSaveFile } from './download';
 import { Modal } from './kit';
 
 type Pick = 'month' | 'prev' | 'year' | 'all' | 'custom';
 
-/** BR-19: xuất Excel giao dịch theo kỳ, mỗi dòng một phần chia. */
+/** BR-19: Excel export of transactions by period, one row per share. */
 export default function ExportDialog({ ix, onClose }: { ix: Index; onClose: () => void }) {
-  const toast = useToast();
+  const saveFile = useSaveFile();
   const cur = periodOf(today(), ix.startDay);
   const [pick, setPick] = useState<Pick>('month');
   const [from, setFrom] = useState(periodRange(cur, ix.startDay).from);
@@ -37,8 +36,8 @@ export default function ExportDialog({ ix, onClose }: { ix: Index; onClose: () =
 
   const go = () => {
     const bytes = buildXlsx(sheets);
-    saveBlob(new Blob([bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `hihand-finto-${p.file}.xlsx`);
-    toast({ text: `Đã xuất ${sheets[0].rows.length} dòng phần chia` });
+    void saveFile(new Blob([bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `hihand-finto-${p.file}.xlsx`,
+      `Đã xuất ${sheets[0].rows.length} dòng phần chia`);
     onClose();
   };
 

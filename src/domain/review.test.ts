@@ -29,8 +29,8 @@ beforeEach(async () => {
   A = p.id;
 });
 
-describe('kiểm tra lại: dữ liệu vào', () => {
-  it('chặn ngày trống / sai ở mọi thao tác ghi', async () => {
+describe('review: input validation', () => {
+  it('blocks empty / invalid dates in every write', async () => {
     await expect(meal('')).rejects.toThrow();
     await expect(settle(db, { personId: A, date: '', amount: 1000, picks: [] })).rejects.toThrow();
     await settle(db, { personId: A, date: '2026-11-02', amount: 1000, picks: [] });
@@ -40,15 +40,15 @@ describe('kiểm tra lại: dữ liệu vào', () => {
     await expect(forgiveShare(db, d.share.id, 1000, '')).rejects.toThrow();
   });
 
-  it('chặn danh mục không tồn tại hoặc là danh mục thu khi ghi khoản chi', async () => {
+  it('blocks unknown categories or income categories when saving an expense', async () => {
     const base0 = { date: '2026-11-05', kind: 'expense' as const, title: 'x', totalAmount: 1000, splitMode: 'equal' as const, tagIds: [], shares: [{ personId: null, type: 'mine' as const, amount: 1000 }] };
     await expect(saveExpense(db, { ...base0, categoryId: 'khong-co' })).rejects.toThrow();
     await expect(saveExpense(db, { ...base0, categoryId: await cat('Lương', 'income') })).rejects.toThrow();
   });
 });
 
-describe('kiểm tra lại: phần “cho luôn” gắn với lần nhận', () => {
-  it('xóa riêng khoản cho luôn thì số dư tài khoản không đổi (tiền vẫn đã vào), phần đó thành tiền giữ', async () => {
+describe('review: gifted surplus tied to a payment', () => {
+  it('deleting only the gifted surplus keeps the account balance (the money did come in); it becomes held money', async () => {
     await meal();
     const [d] = openDebts(makeIndex(await snap()), A);
     await settle(db, { personId: A, date: '2026-11-06', amount: 100_000, picks: [{ shareId: d.share.id, amount: 95_000 }], surplus: 'gift' });
@@ -62,7 +62,7 @@ describe('kiểm tra lại: phần “cho luôn” gắn với lần nhận', ()
     expect(await creditOf(db, A)).toBe(0);
   });
 
-  it('không cho sửa số tiền khoản cho luôn (phải sửa ở lần nhận)', async () => {
+  it('the gifted surplus amount cannot be edited (edit the payment instead)', async () => {
     await meal();
     const [d] = openDebts(makeIndex(await snap()), A);
     await settle(db, { personId: A, date: '2026-11-06', amount: 100_000, picks: [{ shareId: d.share.id, amount: 95_000 }], surplus: 'gift' });
@@ -73,8 +73,8 @@ describe('kiểm tra lại: phần “cho luôn” gắn với lần nhận', ()
   });
 });
 
-describe('kiểm tra lại: hoàn tác', () => {
-  it('hoàn tác xóa giao dịch sau khi lần nhận liên quan đã bị xóa: tiền đang giữ không âm', async () => {
+describe('review: undo', () => {
+  it('undoing a transaction delete after its payment was deleted: held money stays non-negative', async () => {
     await meal();
     const [d] = openDebts(makeIndex(await snap()), A);
     const st = await settle(db, { personId: A, date: '2026-11-06', amount: 95_000, picks: [{ shareId: d.share.id, amount: 95_000 }] });

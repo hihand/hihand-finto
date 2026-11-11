@@ -2,28 +2,28 @@ import { now, observeClock, SYNC_TABLES, SYNCED_SETTINGS, type FintoDB, type Set
 import { creditOf, fixNegativeCredit, fixOverOffset, openPayables } from './ledger';
 
 /**
- * Đồng bộ giữa các trình duyệt bằng "gói đồng bộ" (file JSON, có thể mã hóa), không cần máy chủ.
+ * Sync between browsers with "sync packages" (JSON files, optionally encrypted), no server needed.
  *
- * - Mỗi trình duyệt có một mã máy riêng (bảng meta, không sao lưu / không đồng bộ).
- * - Mỗi lần ghi, bản ghi nhận một số thứ tự _seq của máy này. Với mỗi máy đã đồng bộ, ta nhớ:
- *   · theirSeq — đã nhận các thay đổi của họ tới số nào (gửi kèm trong gói như "xác nhận");
- *   · ackedByThem — họ đã xác nhận nhận các thay đổi của ta tới số nào → gói sau chỉ chứa phần mới hơn.
- * - Gộp theo từng bản ghi: bản có updatedAt mới hơn thắng (bằng nhau thì so nội dung để mọi máy chọn giống nhau).
- *   Xóa là xóa mềm nên cũng đồng bộ như một lần sửa.
- * - Sau khi gộp: gộp danh mục / tag / người trùng tên (mỗi trình duyệt tự tạo danh mục mặc định với mã khác nhau),
- *   rồi kiểm tra lại các quy tắc tiền (tiền giữ không âm, khoản nợ không bị trả vượt) và báo những gì đã tự sửa.
+ * - Each browser has its own device id (meta table, not backed up / not synced).
+ * - Every write gives the record a local sequence number _seq. For every synced browser we remember:
+ *   · theirSeq — up to which number we have received their changes (sent in packages as an "ack");
+ *   · ackedByThem — up to which number they have confirmed ours → the next package only contains newer changes.
+ * - Merge per record: the newer updatedAt wins (ties are broken by content so every browser picks the same one).
+ *   Deletes are soft, so they sync like any edit.
+ * - After merging: merge categories / tags / people with the same name (each browser seeds its own defaults with different ids),
+ *   then re-check the money rules (held money not negative, debts not over-repaid) and report what was fixed.
  */
 
 export interface Device { id: string; name: string }
 export interface PeerState {
   id: string;
   name: string;
-  /** Đã nhận thay đổi của máy đó tới số này. */
+  /** Received that browser's changes up to this number. */
   theirSeq: number;
-  /** Máy đó đã xác nhận nhận thay đổi của máy này tới số này. */
+  /** That browser confirmed receiving this browser's changes up to this number. */
   ackedByThem: number;
   lastIn?: { at: string; added: number; updated: number; total: number };
-  /** Các khoảng _seq đã ghi khi nhập gói của chính máy đó: không gửi ngược lại cho họ (gói gọn hơn). */
+  /** _seq ranges written while importing that browser's own packages: not sent back to it (smaller packages). */
   echo?: [number, number][];
   lastOut?: { at: string; count: number; full: boolean };
 }
@@ -34,13 +34,13 @@ export interface SyncPackage {
   kind: 'sync';
   v: 1;
   from: Device;
-  /** Gói làm cho máy nào (null = gói đầy đủ, dùng cho máy mới / mọi máy). */
+  /** Which browser the package is for (null = full package, for a new browser / any browser). */
   to: string | null;
   createdAt: string;
-  /** Chứa các thay đổi có số thứ tự (since, upto] của máy gửi. */
+  /** Contains the sender's changes with sequence numbers in (since, upto]. */
   since: number;
   upto: number;
-  /** Máy gửi đã nhận thay đổi của từng máy khác tới số nào. */
+  /** Up to which number the sender has received each other browser's changes. */
   acks: Record<string, number>;
   settings?: Partial<Settings> & { syncUpdatedAt?: string };
   tables: Partial<Record<SyncTable, Row[]>>;
@@ -51,18 +51,18 @@ export interface ImportReport {
   from: Device;
   added: number;
   updated: number;
-  /** Bản ghi bị xóa (mềm) theo máy kia, kể cả bản trùng mà máy kia đã gộp. */
+  /** Records (soft-)deleted by the other browser, including duplicates it merged. */
   removed: number;
   skipped: number;
   perTable: Partial<Record<SyncTable, { added: number; updated: number }>>;
   settingsUpdated: boolean;
-  /** Những gì đã tự sửa sau khi gộp (gộp trùng tên, gỡ khoản trừ làm tiền giữ âm…). */
+  /** What was fixed automatically after merging (same-name merges, removed rows that made held money negative…). */
   fixes: string[];
-  /** Cần bạn xem lại. */
+  /** Needs your review. */
   warnings: string[];
 }
 
-/* ---------- Máy này và các máy đã đồng bộ ---------- */
+/* ---------- This browser and synced browsers ---------- */
 
 export async function getDevice(db: FintoDB): Promise<Device> {
   const cur = (await db.meta.get('device'))?.value as Device | undefined;
@@ -85,14 +85,14 @@ export async function getPeers(db: FintoDB): Promise<Record<string, PeerState>> 
 }
 const savePeers = (db: FintoDB, peers: Record<string, PeerState>) => db.meta.put({ key: 'peers', value: peers });
 
-/** Quên một máy: lần sau gửi cho máy đó sẽ là gói đầy đủ. */
+/** Forget a browser: the next package for it will be a full one. */
 export async function forgetPeer(db: FintoDB, peerId: string) {
   const peers = await getPeers(db);
   delete peers[peerId];
   await savePeers(db, peers);
 }
 
-/** Số bản ghi đã đổi trên máy này mà máy kia chưa có (chưa xác nhận, không tính phần lấy từ chính máy đó). */
+/** Records changed on this browser that the other one does not have yet (not acknowledged, excluding what came from it). */
 export async function pendingFor(db: FintoDB, peerId: string | null) {
   const peer = peerId ? (await getPeers(db))[peerId] : undefined;
   const since = peer?.ackedByThem ?? 0;
@@ -105,14 +105,14 @@ export async function pendingFor(db: FintoDB, peerId: string | null) {
   return n;
 }
 
-/* ---------- Xuất gói ---------- */
+/* ---------- Export ---------- */
 
 const strip = (r: Record<string, unknown>) => {
   const { _seq: _s, ...rest } = r;
   return rest as Row;
 };
 
-/** Tạo gói đồng bộ: cho một máy đã biết (chỉ phần thay đổi chưa được xác nhận) hoặc gói đầy đủ (to = null). */
+/** Build a sync package: for a known browser (only unacknowledged changes) or a full package (to = null). */
 export async function buildPackage(db: FintoDB, to: string | null): Promise<SyncPackage> {
   return db.transaction('rw', [...SYNC_TABLES.map((t) => db.table(t)), db.settings, db.meta], async () => {
     const from = await getDevice(db);
@@ -139,10 +139,10 @@ export async function buildPackage(db: FintoDB, to: string | null): Promise<Sync
   });
 }
 
-/** Số bản ghi trong gói. */
+/** Number of records in a package. */
 export const packageSize = (p: SyncPackage) => Object.values(p.tables).reduce((a, rows) => a + (rows?.length ?? 0), 0);
 
-/* ---------- Mã hóa (tùy chọn): PBKDF2 + AES-GCM ---------- */
+/* ---------- Encryption (optional): PBKDF2 + AES-GCM ---------- */
 
 const te = new TextEncoder();
 const td = new TextDecoder();
@@ -160,7 +160,7 @@ async function deriveKey(password: string, salt: Uint8Array) {
     { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 
-/** Chuyển gói thành nội dung file; có mật khẩu thì mã hóa. */
+/** Turn a package into file contents; encrypted when a password is given. */
 export async function packageToText(pkg: SyncPackage, password?: string): Promise<string> {
   const json = JSON.stringify(pkg);
   if (!password) return json;
@@ -171,7 +171,7 @@ export async function packageToText(pkg: SyncPackage, password?: string): Promis
   return JSON.stringify(out);
 }
 
-/** Đọc file gói: trả về gói, hoặc cho biết cần mật khẩu. */
+/** Read a package file: returns the package, or that a password is needed. */
 export async function readPackage(text: string, password?: string): Promise<{ pkg: SyncPackage } | { needPassword: true; fromName: string }> {
   let raw: unknown;
   try {
@@ -208,14 +208,14 @@ function validate(p: SyncPackage) {
   }
 }
 
-/* ---------- Nhập + gộp ---------- */
+/* ---------- Import + merge ---------- */
 
-/** So nội dung ổn định (khóa theo thứ tự) để hai máy luôn chọn cùng một bản khi updatedAt bằng nhau. */
+/** Stable content comparison (sorted keys) so two browsers always pick the same record when updatedAt ties. */
 const stable = (r: Row) => JSON.stringify(Object.keys(r).sort().map((k) => [k, r[k]]));
-/** > 0: bản `a` thắng. */
+/** > 0: record `a` wins. */
 const newer = (a: Row, b: Row) => a.updatedAt.localeCompare(b.updatedAt) || stable(a).localeCompare(stable(b));
 
-/** Gộp một gói vào sổ này. Chạy trong một giao dịch: lỗi giữa chừng thì không thay đổi gì. */
+/** Merge a package into this ledger. Runs in one transaction: a failure halfway changes nothing. */
 export async function importPackage(db: FintoDB, pkg: SyncPackage): Promise<ImportReport> {
   validate(pkg);
   return db.transaction('rw', [...SYNC_TABLES.map((t) => db.table(t)), db.settings, db.meta], async () => {
@@ -254,10 +254,10 @@ export async function importPackage(db: FintoDB, pkg: SyncPackage): Promise<Impo
       report.updated += stat.updated;
     }
 
-    // Các bản ghi vừa lấy từ máy gửi: lần sau gửi cho họ thì bỏ qua (họ đã có).
+    // Records just taken from the sender: skip them next time we send to it (it already has them).
     const echo: [number, number] = [seq0, db.seq];
 
-    // Cài đặt dùng chung: bản đổi sau thắng.
+    // Shared settings: the later change wins.
     const inc = pkg.settings;
     const cur = await db.settings.get('settings');
     if (inc?.syncUpdatedAt && cur && (!cur.syncUpdatedAt || inc.syncUpdatedAt > cur.syncUpdatedAt)) {
@@ -268,7 +268,7 @@ export async function importPackage(db: FintoDB, pkg: SyncPackage): Promise<Impo
 
     if (report.added || report.updated || report.removed) {
       report.fixes.push(...(await dedupe(db)));
-      // Quy tắc tiền sau khi gộp (ví dụ hai máy cùng trừ vào một khoản tiền giữ).
+      // Money rules after merging (e.g. both browsers applied the same held money).
       for (const pid of touched) {
         const name = ((await db.people.get(pid))?.name) ?? '?';
         const a = await fixNegativeCredit(db, pid);
@@ -280,7 +280,7 @@ export async function importPackage(db: FintoDB, pkg: SyncPackage): Promise<Impo
       }
     }
 
-    // Ghi nhớ đã đồng bộ tới đâu với máy gửi.
+    // Remember how far we are synced with the sender.
     const peers = await getPeers(db);
     const p = peers[pkg.from.id] ?? { id: pkg.from.id, name: pkg.from.name, theirSeq: 0, ackedByThem: 0 };
     p.name = pkg.from.name;
@@ -296,12 +296,12 @@ export async function importPackage(db: FintoDB, pkg: SyncPackage): Promise<Impo
   });
 }
 
-/* ---------- Gộp trùng sau khi đồng bộ ---------- */
+/* ---------- De-duplicate after syncing ---------- */
 
 type Live = { id: string; deletedAt?: string | null };
 const alive = <T extends Live>(rows: T[]) => rows.filter((r) => !r.deletedAt);
 
-/** Nhóm theo khóa; trong mỗi nhóm giữ mã nhỏ nhất (mọi máy chọn giống nhau). Trả về map mã trùng → mã giữ lại. */
+/** Group by key; keep the smallest id per group (every browser picks the same). Returns a map duplicate id → kept id. */
 function dupMap<T extends Live>(rows: T[], key: (r: T) => string) {
   const keep = new Map<string, string>();
   const map = new Map<string, string>();
@@ -328,7 +328,7 @@ async function softDelete(db: FintoDB, table: SyncTable, ids: Iterable<string>) 
   for (const id of ids) await db.table(table).update(id, { deletedAt: t, updatedAt: t });
 }
 
-/** Xóa dòng liên kết trùng (cùng cặp khóa), giữ mã nhỏ nhất. */
+/** Remove duplicate link rows (same key pair), keeping the smallest id. */
 async function dedupeLinks(db: FintoDB, table: SyncTable, key: (r: Record<string, unknown>) => string) {
   const rows = alive((await db.table(table).toArray()) as (Live & Record<string, unknown>)[]);
   const dups = dupMap(rows, key);
@@ -339,8 +339,8 @@ async function dedupeLinks(db: FintoDB, table: SyncTable, key: (r: Record<string
 const norm = (s: unknown) => String(s ?? '').trim().toLowerCase();
 
 /**
- * Mỗi trình duyệt tự tạo danh mục / tag mặc định (và có thể tự thêm cùng một người) với mã khác nhau.
- * Sau khi gộp: giữ một bản theo tên, chuyển mọi tham chiếu sang bản giữ lại, xóa mềm bản trùng.
+ * Each browser seeds its own default categories / tags (and may add the same person) with different ids.
+ * After merging: keep one per name, move every reference to the kept one, soft-delete the duplicates.
  */
 async function dedupe(db: FintoDB): Promise<string[]> {
   const out: string[] = [];
@@ -377,7 +377,7 @@ async function dedupe(db: FintoDB): Promise<string[]> {
   return out;
 }
 
-/** Tên file gợi ý cho gói. */
+/** Suggested file name for a package. */
 export function packageFileName(pkg: SyncPackage, toName?: string) {
   const slug = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/gi, 'd').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
   return `finto-sync-${slug(pkg.from.name)}-${pkg.to ? 'cho-' + slug(toName ?? 'may-khac') : 'day-du'}-${pkg.createdAt.slice(0, 10)}.json`;

@@ -13,7 +13,7 @@ import { money, short, useRun, noteText, txTitle } from '../ui/format';
 
 const toText = (n: number) => (n ? n.toLocaleString('vi-VN') : '');
 
-/** BR-06/07/08, UC-09, UC-10: thu tiền, trừ một phần, tiền gửi/ứng trước; phần dư cho luôn; phần thiếu bỏ qua. */
+/** BR-06/07/08, UC-09, UC-10: collect money, partial payments, deposits / advances; gift the surplus; forgive the shortfall. */
 export default function Settle() {
   const ix = useIndex();
   const nav = useNavigate();
@@ -32,7 +32,7 @@ export default function Settle() {
 
   const owes = outstanding(ix);
   const oweOf = new Map(owes.map((o) => [o.personId, o]));
-  // Người đã ẩn nhưng còn nợ / còn tiền giữ vẫn phải thu được.
+  // Hidden people who still owe or have held money must still be collectable.
   const people = [...ix.people.filter((p) => !p.archived || oweOf.has(p.id) || creditOf(ix, p.id) > 0)].sort((a, b) =>
     (oweOf.get(b.id)?.amount ?? 0) - (oweOf.get(a.id)?.amount ?? 0) || creditOf(ix, b.id) - creditOf(ix, a.id));
   const sel = params.get('p') && ix.person.get(params.get('p')!) ? params.get('p')! : people[0]?.id;
@@ -82,7 +82,7 @@ export default function Settle() {
   });
 
   const creditOnly = received === 0 && picked.length > 0;
-  const tip = Math.max(0, received - pickedSum); // phần dư của tiền vừa nhận (UC-09)
+  const tip = Math.max(0, received - pickedSum); // surplus of the money just received (UC-09)
   const gift = surplus === 'gift' ? tip : 0;
   const forgiveAmt = diff < 0 && shortfall === 'forgive' ? -diff : 0;
   const canSave = (received > 0 || (creditOnly && diff >= 0)) && !badPick && !saving;

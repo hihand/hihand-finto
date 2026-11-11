@@ -1,6 +1,6 @@
 import { base, now, type FintoDB, type Person } from '../db/schema';
 
-/** BR-14: quản lý danh mục, tag, người. Xóa là xóa mềm nên giao dịch cũ vẫn giữ tên. */
+/** BR-14: manage categories, tags, people. Deletes are soft, so old transactions keep their names. */
 
 const clean = (s: string) => s.trim().replace(/\s+/g, ' ');
 
@@ -25,7 +25,7 @@ export async function renameCategory(db: FintoDB, id: string, name: string) {
   await db.categories.update(id, { name: n, updatedAt: now() });
 }
 
-/** Bật/tắt "Tính vào Chi của tôi" cho danh mục chính và các danh mục con. */
+/** Toggle "Counts as my spending" for a top-level category and its subcategories. */
 export async function setCountsAsMine(db: FintoDB, rootId: string, value: boolean) {
   const t = now();
   await db.transaction('rw', db.categories, async () => {
@@ -42,7 +42,7 @@ export async function deleteCategory(db: FintoDB, id: string) {
   });
 }
 
-/** Thêm tag cho danh mục; dùng lại tag cùng tên nếu đã có (tag dùng chung). */
+/** Add a tag to a category; reuses an existing tag with the same name (tags are shared). */
 export async function addTagToCategory(db: FintoDB, categoryId: string, name: string) {
   const n = clean(name).replace(/^#/, '');
   if (!n) throw new Error('Cần nhập tên tag');
@@ -60,7 +60,7 @@ export async function addTagToCategory(db: FintoDB, categoryId: string, name: st
   });
 }
 
-/** Bỏ tag khỏi danh mục (tag vẫn còn trên giao dịch cũ). */
+/** Remove a tag from a category (old transactions keep it). */
 export async function removeTagFromCategory(db: FintoDB, categoryId: string, tagId: string) {
   const t = now();
   await db.categoryTags.where('categoryId').equals(categoryId).filter((l) => l.tagId === tagId && !l.deletedAt)
@@ -87,7 +87,7 @@ export async function updatePerson(db: FintoDB, id: string, patch: Partial<Pick<
   await db.people.update(id, { ...patch, updatedAt: now() });
 }
 
-/** BR-18: nhóm người hay đi cùng. */
+/** BR-18: groups of people you often go out with. */
 export async function saveGroup(db: FintoDB, input: { id?: string; name: string; memberIds: string[] }) {
   const n = clean(input.name);
   if (!n) throw new Error('Cần nhập tên nhóm');

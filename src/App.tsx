@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { UpdateBanner } from './ui/AppBanners';
 import { NavLink, Route, Routes } from 'react-router-dom';
 import { useTheme } from './theme';
 import { BrandMark, Icon, PrivacyToggle, Segmented, ToastProvider } from './ui/kit';
@@ -23,9 +24,19 @@ const NAV = [
 
 export default function App() {
   const { pref, setTheme } = useTheme();
-  // Mặc định ẩn mỗi lần mở app (Cài đặt › "Ẩn khi mở app"); bấm con mắt chỉ đổi cho lần dùng này.
+  // Hidden by default on every app open (Settings › "Hide on open"); the eye button only changes it for this session.
   const hideOnOpen = useLiveQuery(async () => (await db.settings.get('settings'))?.hideOnOpen ?? true) ?? true;
   const [override, setOverride] = useState<boolean | null>(null);
+  // Reopening the app after more than 1 minute in the background (phones): hide amounts again, like on app open.
+  const hiddenAt = useRef(0);
+  useEffect(() => {
+    const onVis = () => {
+      if (document.hidden) hiddenAt.current = Date.now();
+      else if (hiddenAt.current && Date.now() - hiddenAt.current > 60_000) setOverride(null);
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
   const hidden = override ?? hideOnOpen;
   const privacy = { hidden, toggle: () => setOverride(!hidden) };
   return (
@@ -34,7 +45,7 @@ export default function App() {
       <div className="app">
         <aside className="side">
           <div className="row between nowrap brand-row">
-            <div className="brand"><BrandMark />Hihand Finto</div>
+            <div className="brand"><BrandMark /><span>Hihand <span className="brand-finto">Finto</span></span></div>
             <span className="row nowrap" style={{ gap: 2 }}>
               <PrivacyToggle />
               <NavLink to="/cai-dat" className="icon-btn only-sm" aria-label="Cài đặt"><Icon name="settings" /></NavLink>
@@ -62,6 +73,7 @@ export default function App() {
             <Route path="*" element={<p className="muted">Không có trang này.</p>} />
           </Routes>
         </main>
+        <UpdateBanner />
         <nav className="bottom-nav" aria-label="Điều hướng nhanh">
           {NAV.slice(0, 2).map((n) => (
             <NavLink key={n.to} to={n.to} end={n.to === '/'}><Icon name={n.icon} />{n.label}</NavLink>

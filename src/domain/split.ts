@@ -1,9 +1,9 @@
 import type { ShareType } from '../db/schema';
 
 export interface Participant {
-  personId: string | null; // null = tôi
-  type: ShareType; // 'mine' cho tôi, 'owe' | 'give' cho người khác
-  amount?: number; // chỉ dùng khi chia tùy chỉnh
+  personId: string | null; // null = me
+  type: ShareType; // 'mine' for me, 'owe' | 'give' for others
+  amount?: number; // only used for custom splits
 }
 
 export interface ShareDraft {
@@ -12,7 +12,7 @@ export interface ShareDraft {
   amount: number;
 }
 
-/** Gõ "360k" / "360.000" / "1,5tr" → số đồng. */
+/** Typing "360k" / "360.000" / "1,5tr" → amount in VND. */
 export function parseAmount(input: string): number {
   const s = input.trim().toLowerCase().replace(/\s/g, '');
   const m = s.match(/^([\d.,]+)(k|tr|m)?$/);
@@ -30,8 +30,8 @@ export function parseAmount(input: string): number {
 export const formatVND = (n: number) => `${Math.round(n).toLocaleString('vi-VN')}đ`;
 
 /**
- * RULE-03: chia đều, làm tròn xuống 1.000đ; phần lẻ vào phần Của tôi
- * (không có tôi thì vào người đầu tiên).
+ * RULE-03: equal split, rounded down to 1,000đ; the remainder goes to Mine
+ * (or to the first person if I am not in the split).
  */
 export function splitEqual(total: number, people: Participant[]): ShareDraft[] {
   if (people.length === 0) throw new Error('Cần ít nhất một người');
@@ -43,7 +43,7 @@ export function splitEqual(total: number, people: Participant[]): ShareDraft[] {
   return shares;
 }
 
-/** Chia tùy chỉnh: người đã nhập giữ số; "Chia phần còn lại" chia đều phần chưa phân cho người chưa nhập. */
+/** Custom split: people with an amount keep it; "Split the rest" divides the unassigned rest among people without one. */
 export function splitRemaining(total: number, people: Participant[]): ShareDraft[] {
   const fixed = people.filter((p) => p.amount != null && p.amount > 0);
   const open = people.filter((p) => !(p.amount != null && p.amount > 0));

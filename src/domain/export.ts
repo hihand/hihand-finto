@@ -5,7 +5,7 @@ import { debtLedger, oweAmount, rootOf, statusOf, type Index } from './stats';
 const TYPE = { mine: 'Của tôi', owe: 'Đòi lại', give: 'Cho đi' } as const;
 const STATUS = { paid: 'Đã trả', partial: 'Trả một phần', open: 'Đang chờ' } as const;
 
-/** BR-19: mỗi dòng một phần chia, có loại và người; thêm trang Thu tiền và Thu nhập. range = null là tất cả. */
+/** BR-19: one row per share, with type and person; plus Payments and Income sheets. range = null means everything. */
 export function exportSheets(ix: Index, range: { from: string; to: string } | null): Sheet[] {
   const inR = (d: string) => !range || inRange(d, range);
   const txs = ix.txs.filter((t) => inR(t.date)).sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
@@ -40,7 +40,7 @@ export function exportSheets(ix: Index, range: { from: string; to: string } | nu
     const sub = ix.category.get(r.categoryId);
     return [{ date: r.date }, root?.name ?? '', sub?.parentId ? sub.name : '', r.amount, r.personId ? ix.person.get(r.personId)?.name ?? '' : '', r.title];
   });
-  // Công nợ: mọi dòng của sổ nợ (tôi nợ người khác) + các khoản người khác nợ đầu kỳ.
+  // Debts: every row of the debt book (what I owe) + opening amounts others owe me.
   const debtRows = ix.people.flatMap((p) => debtLedger(ix, p.id).filter((e) => inR(e.date)).map((e) => [
     { date: e.date }, p.name, 'Tôi nợ', e.label, e.delta, e.balance,
   ]));

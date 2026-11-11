@@ -29,29 +29,29 @@ const lau = (applyCredit?: boolean) =>
   });
 
 describe('split', () => {
-  it('parse số tiền', () => {
+  it('parse amounts', () => {
     expect(parseAmount('360k')).toBe(360000);
     expect(parseAmount('360.000')).toBe(360000);
     expect(parseAmount('1,5tr')).toBe(1500000);
   });
-  it('RULE-03 phần lẻ vào Của tôi', () => {
+  it('RULE-03 remainder goes to Mine', () => {
     const s = splitEqual(100000, [{ personId: P.an, type: 'owe' }, { personId: null, type: 'mine' }, { personId: P.binh, type: 'owe' }]);
     expect(s.map((x) => x.amount)).toEqual([33000, 34000, 33000]);
   });
-  it('chia phần còn lại', () => {
+  it('split the remainder', () => {
     const s = splitRemaining(300000, [{ personId: null, type: 'mine', amount: 100000 }, { personId: P.an, type: 'owe' }, { personId: P.binh, type: 'owe' }]);
     expect(s.map((x) => x.amount)).toEqual([100000, 100000, 100000]);
   });
 });
 
 describe('ledger', () => {
-  it('UC-01 lẩu 360k chia 4', async () => {
+  it('UC-01 360k hotpot split 4 ways', async () => {
     await lau();
     expect(await debtOf(db, P.an)).toBe(90000);
     expect(await debtOf(db, P.chi)).toBe(0);
   });
 
-  it('UC-02/03 thu 200k, trừ một phần, dư thành tiền đang giữ', async () => {
+  it('UC-02/03 receive 200k, partly applied, the rest becomes held money', async () => {
     await lau();
     const [d] = await pickOldest(db, P.an, 50000);
     await receivePayment(db, { personId: P.an, date: '2026-11-07', amount: 50000, picks: [d] });
@@ -63,7 +63,7 @@ describe('ledger', () => {
     expect(await creditOf(db, P.an)).toBe(160000);
   });
 
-  it('UC-04 gửi trước 500k rồi tự trừ; xóa lần gửi thì khoản quay về Đang chờ', async () => {
+  it('UC-04 deposit 500k then auto-apply; deleting the deposit puts the item back to Waiting', async () => {
     const st = await receivePayment(db, { personId: P.binh, date: '2026-11-06', amount: 500000, picks: [] });
     await lau();
     expect(await debtOf(db, P.binh)).toBe(0);
@@ -73,14 +73,14 @@ describe('ledger', () => {
     expect(await debtOf(db, P.binh)).toBe(90000);
   });
 
-  it('tắt tự trừ cho một giao dịch', async () => {
+  it('turn off auto-apply for one transaction', async () => {
     await receivePayment(db, { personId: P.binh, date: '2026-11-06', amount: 500000, picks: [] });
     await lau(false);
     expect(await debtOf(db, P.binh)).toBe(90000);
     expect(await creditOf(db, P.binh)).toBe(500000);
   });
 
-  it('xóa giao dịch trả tiền về tiền đang giữ', async () => {
+  it('deleting a transaction returns the money to held money', async () => {
     await receivePayment(db, { personId: P.binh, date: '2026-11-06', amount: 500000, picks: [] });
     const tx = await lau();
     await deleteTransaction(db, tx);
@@ -88,7 +88,7 @@ describe('ledger', () => {
     expect(await debtOf(db, P.binh)).toBe(0);
   });
 
-  it('chặn trừ vượt số tiền', async () => {
+  it('blocks applying more than the amount', async () => {
     await lau();
     const sh = (await db.shares.where('personId').equals(P.an).first())!;
     await expect(receivePayment(db, { personId: P.an, date: '2026-11-07', amount: 10000, picks: [{ shareId: sh.id, amount: 90000 }] })).rejects.toThrow();

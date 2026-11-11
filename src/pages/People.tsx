@@ -18,7 +18,7 @@ import { txTitle } from '../ui/format';
 
 type Tab = 'give' | 'owe';
 
-/** BR-13, BR-08, UC-08: Cho đi / Đòi lại từ trước tới nay, theo người, theo tháng, lọc danh mục. */
+/** BR-13, BR-08, UC-08: Given / Owed all time, per person, per month, filtered by category. */
 export default function People() {
   const ix = useIndex();
   const [view, setView] = useState<Tab | 'gift'>('give');
@@ -58,7 +58,7 @@ export default function People() {
   for (const e of shown) months.set(e.tx.date.slice(0, 7), [...(months.get(e.tx.date.slice(0, 7)) ?? []), e]);
   const credit = selId ? creditOf(ix, selId) : 0;
   const iOwe = selId ? owedTo(ix, selId) : 0;
-  // Người còn công nợ trước; người đã huề hết (vẫn có sổ nợ) ở sau.
+  // People with open debts first; fully settled people (who still have a debt book) after.
   const debts = debtSummary(ix);
   for (const id of new Set(ix.payables.map((x) => x.personId))) if (!debts.some((d) => d.personId === id)) debts.push({ personId: id, iOwe: 0, theyOwe: 0 });
 
@@ -227,7 +227,7 @@ export default function People() {
   );
 }
 
-/** UC-10 (không kèm lần nhận): bỏ qua một phần / cả khoản Đòi lại — phần đó thành Cho đi. */
+/** UC-10 (without a payment): forgive part / all of an Owed item — that part becomes Given. */
 function ForgiveDialog({ name, shareId, remaining, title, onClose }: { name: string; shareId: string; remaining: number; title: string; onClose: () => void }) {
   const run = useRun();
   const [text, setText] = useState(remaining.toLocaleString('vi-VN'));
@@ -251,7 +251,7 @@ function ForgiveDialog({ name, shareId, remaining, title, onClose }: { name: str
   );
 }
 
-/** Người đã cho bạn tiền (thu nhập có gắn người), từ trước tới nay, nhóm theo tháng. */
+/** People who gave you money (incomes with a person), all time, grouped by month. */
 function Gifts({ ix }: { ix: Index }) {
   const gifts = giftsFromPeople(ix);
   const [sel, setSel] = useState<string | null>(null);

@@ -7,7 +7,7 @@ import { Empty, Icon, Segmented, SplitBar } from '../ui/kit';
 import { money, short, txTitle, useMask } from '../ui/format';
 import YearChart from '../ui/YearChart';
 
-/** BR-12, BR-17, UC-07: thống kê tháng/năm — danh mục → danh mục con → từng giao dịch; theo tag; 12 tháng. */
+/** BR-12, BR-17, UC-07: monthly / yearly stats — category → subcategory → transactions; by tag; 12 months. */
 export default function Stats() {
   const ix = useIndex();
   const [params, setParams] = useSearchParams();

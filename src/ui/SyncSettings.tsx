@@ -5,8 +5,8 @@ import {
   buildPackage, forgetPeer, getDevice, getPeers, importPackage, packageFileName, packageSize, packageToText, pendingFor, readPackage, setDeviceName,
   type ImportReport, type SyncPackage,
 } from '../domain/sync';
-import { saveBlob } from './download';
-import { useRun, useToast } from './format';
+import { useSaveFile } from './download';
+import { useRun } from './format';
 import { Empty } from './kit';
 
 const when = (iso?: string) => {
@@ -21,19 +21,19 @@ const TABLE_NAME: Record<string, string> = {
 };
 
 /**
- * Đồng bộ giữa các trình duyệt bằng gói JSON (gửi qua USB, Zalo, email, Drive…):
- * tên máy này, bảng "đã đồng bộ những gì" với từng máy, xuất gói (chỉ phần mới) và nhập gói (gộp, không ghi đè).
+ * Sync between browsers with JSON packages (sent via USB, Zalo, email, Drive…):
+ * this browser's name, a "what has been synced" table per browser, export (only new changes) and import (merge, not overwrite).
  */
 export default function SyncSettings() {
   const run = useRun();
-  const toast = useToast();
+  const saveFile = useSaveFile();
   const [password, setPassword] = useState('');
   const [pending, setPending] = useState<{ text: string; fromName: string } | null>(null);
   const [report, setReport] = useState<ImportReport | null>(null);
   const [nameText, setNameText] = useState<string | null>(null);
 
   const state = useLiveQuery(async () => {
-    // Chỉ đọc (liveQuery không được ghi); mã máy đã được tạo lúc mở app.
+    // Read only (liveQuery cannot write); the device id was created on app start.
     const device = ((await db.meta.get('device'))?.value as Awaited<ReturnType<typeof getDevice>> | undefined) ?? { id: '—', name: 'Trình duyệt này' };
     const peers = Object.values(await getPeers(db));
     const rows = await Promise.all(peers.map(async (p) => ({ ...p, pending: await pendingFor(db, p.id) })));
@@ -47,8 +47,8 @@ export default function SyncSettings() {
     if (!pkg) return;
     const p = pkg as SyncPackage;
     const text = await packageToText(p, password || undefined);
-    saveBlob(new Blob([text], { type: 'application/json' }), packageFileName(p, toName));
-    toast({ text: `Đã tạo gói ${packageSize(p)} bản ghi${to ? ` cho ${toName}` : ' (đầy đủ)'}${password ? ' · đã mã hóa' : ''}` });
+    await saveFile(new Blob([text], { type: 'application/json' }), packageFileName(p, toName),
+      `Đã tạo gói ${packageSize(p)} bản ghi${to ? ` cho ${toName}` : ' (đầy đủ)'}${password ? ' · đã mã hóa' : ''}`);
   };
 
   const doImport = async (text: string, pw?: string) => {

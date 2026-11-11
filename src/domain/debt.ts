@@ -2,9 +2,9 @@ import { base, now, type FintoDB, type Payable, type RepayMode } from '../db/sch
 import { assertDate, assertPayablesOk, creditOf, openDebts, openPayables, owedOf, splitPayables } from './ledger';
 
 /**
- * Công nợ hai chiều (UC-14..UC-19).
- * Quy tắc chung: khoản ĐẦU KỲ nằm ngoài sổ (đã xảy ra trước khi dùng app), khoản PHÁT SINH TRONG APP nằm trong sổ.
- * Các con số suy ra nằm ở stats.ts; file này chỉ ghi dữ liệu, mỗi thao tác chạy trong một giao dịch IndexedDB.
+ * Two-way debts (UC-14..UC-19).
+ * Rule: OPENING amounts are off the books (they happened before using the app); amounts CREATED IN THE APP are on the books.
+ * Derived numbers live in stats.ts; this file only writes data, and every operation runs in one IndexedDB transaction.
  */
 
 const T = (db: FintoDB) => [db.transactions, db.shares, db.settlements, db.allocations, db.payables, db.repayments, db.incomes];
@@ -15,15 +15,15 @@ const positive = (n: number, label = 'Số tiền') => {
 export interface OpeningInput {
   personId: string;
   date: string;
-  /** Đang giữ của người đó (tiền vẫn còn trong tài khoản). */
+  /** Held for that person (the money is still in the account). */
   held: number;
-  /** Tôi đang nợ người đó (đã tiêu mất). */
+  /** I owe that person (already spent). */
   owedByMe: number;
-  /** Người đó đang nợ tôi. */
+  /** That person owes me. */
   owedToMe: number;
 }
 
-/** Số đầu kỳ hiện có của một người (0 nếu chưa nhập). */
+/** Current opening amounts of a person (0 if not entered). */
 export async function getOpening(db: FintoDB, personId: string) {
   const st = (await db.settlements.where('personId').equals(personId).toArray()).find((s) => !s.deletedAt && s.opening);
   const pay = (await db.payables.where('personId').equals(personId).toArray()).find((p) => !p.deletedAt && p.origin === 'opening');
@@ -44,8 +44,8 @@ async function openingShare(db: FintoDB, personId: string) {
 }
 
 /**
- * UC-14: nhập (hoặc sửa) số đầu kỳ của một người. Không phải thu nhập, không phải tiền vào/ra,
- * không vào thống kê kỳ. Số 0 = bỏ phần đó. Không cho giảm dưới phần đã dùng / đã trả.
+ * UC-14: enter (or edit) a person's opening amounts. Not income, not money in/out,
+ * not in period stats. 0 = remove that part. Cannot go below what was already used / repaid.
  */
 export async function setOpening(db: FintoDB, input: OpeningInput) {
   assertDate(input.date);
@@ -55,14 +55,14 @@ export async function setOpening(db: FintoDB, input: OpeningInput) {
   const { personId, date } = input;
   return db.transaction('rw', T(db), async () => {
     const t = now();
-    // Đang giữ đầu kỳ: một lần nhận có cờ opening.
+    // Opening held money: a settlement flagged as opening.
     const st = (await db.settlements.where('personId').equals(personId).toArray()).find((s) => !s.deletedAt && s.opening);
     if (st && input.held === 0) await db.settlements.update(st.id, { deletedAt: t, updatedAt: t });
     else if (st) await db.settlements.update(st.id, { amount: input.held, date, updatedAt: t });
     else if (input.held > 0) await db.settlements.add({ ...base(), personId, date, amount: input.held, direction: 'in', opening: true, note: 'Số đầu kỳ' });
     if ((await creditOf(db, personId)) < 0) throw new Error('Tiền đang giữ đầu kỳ đã được dùng nhiều hơn số mới');
 
-    // Tôi đang nợ đầu kỳ.
+    // Opening amount I owe.
     const pay = (await db.payables.where('personId').equals(personId).toArray()).find((p) => !p.deletedAt && p.origin === 'opening');
     if (pay && input.owedByMe === 0) await db.payables.update(pay.id, { deletedAt: t, updatedAt: t });
     else if (pay) await db.payables.update(pay.id, { amount: input.owedByMe, date, updatedAt: t });
@@ -76,7 +76,7 @@ export async function setOpening(db: FintoDB, input: OpeningInput) {
     }
     await assertPayablesOk(db, personId);
 
-    // Họ đang nợ tôi đầu kỳ: một giao dịch opening có một phần Đòi lại.
+    // Opening amount they owe me: an opening transaction with one Owed share.
     const cur = await openingShare(db, personId);
     if (cur) {
       const paid = (await db.allocations.where('shareId').equals(cur.share.id).toArray()).filter((a) => !a.deletedAt).reduce((s, a) => s + a.amount, 0);
@@ -96,12 +96,12 @@ export async function setOpening(db: FintoDB, input: OpeningInput) {
   });
 }
 
-/** UC-15a (vay mới): người đó chuyển cho tôi, tài khoản tăng, tôi nợ họ. Không phải thu nhập. */
+/** UC-15a (new loan): that person sends me money, the account goes up, I owe them. Not income. */
 export async function borrow(db: FintoDB, input: { personId: string; date: string; amount: number; note?: string }) {
   return addPayable(db, { ...input, origin: 'borrow' });
 }
 
-/** UC-15b: một phần tiền đang giữ đã bị tiêu → chuyển thành khoản tôi nợ (đang giữ giảm, tôi nợ tăng). */
+/** UC-15b: part of held money was spent → turn it into a debt (held goes down, what I owe goes up). */
 export async function heldToDebt(db: FintoDB, input: { personId: string; date: string; amount: number; note?: string }) {
   return addPayable(db, { ...input, origin: 'fromHeld' });
 }
@@ -120,7 +120,7 @@ async function addPayable(db: FintoDB, input: { personId: string; date: string; 
   });
 }
 
-/** Xóa một khoản vay / chuyển từ tiền giữ (hoàn tác). Không cho xóa khi đã có lần trả / cấn trừ. */
+/** Delete a loan / held-money debt (undo). Not allowed once it has repayments / offsets. */
 export async function deletePayable(db: FintoDB, id: string) {
   return db.transaction('rw', T(db), async () => {
     const p = await db.payables.get(id);
@@ -135,13 +135,13 @@ export interface RepayInput {
   personId: string;
   date: string;
   amount: number;
-  /** 'hold' (mặc định): giữ lại trong tài khoản cho người đó. 'transfer': chuyển khoản trả. */
+  /** 'hold' (default): keep the money in the account for that person. 'transfer': pay by bank transfer. */
   mode?: Exclude<RepayMode, 'waive'>;
   note?: string;
   incomeId?: string | null;
 }
 
-/** Ghi trả nợ (gọi bên trong một giao dịch có đủ bảng). */
+/** Write a repayment (call inside a transaction that includes all tables). */
 export async function writeRepay(db: FintoDB, input: Omit<RepayInput, 'mode'> & { mode: RepayMode }) {
   if (!(input.amount > 0)) throw new Error('Số tiền phải lớn hơn 0');
   assertDate(input.date);
@@ -158,17 +158,17 @@ export async function writeRepay(db: FintoDB, input: Omit<RepayInput, 'mode'> & 
   return ids;
 }
 
-/** UC-16: trả nợ (không gắn thu nhập, hoặc gắn qua saveIncome). Trả về id để hoàn tác. */
+/** UC-16: repay (on its own, or tied to an income via saveIncome). Returns ids for undo. */
 export async function repay(db: FintoDB, input: RepayInput) {
   return db.transaction('rw', T(db), async () => await writeRepay(db, { ...input, mode: input.mode ?? 'hold' }));
 }
 
-/** UC-18: người đó xóa nợ cho tôi (một phần hoặc toàn bộ). Không có tiền đi đâu. */
+/** UC-18: that person forgives what I owe (partly or fully). No money moves. */
 export async function waiveDebt(db: FintoDB, input: { personId: string; date: string; amount: number; note?: string }) {
   return db.transaction('rw', T(db), async () => await writeRepay(db, { ...input, mode: 'waive' }));
 }
 
-/** Xóa (hoàn tác) các lần trả nợ. Trả kiểu 'hold' mà tiền giữ đó đã được dùng thì không xóa được. */
+/** Delete (undo) repayments. A 'hold' repayment whose held money was already used cannot be deleted. */
 export async function deleteRepayments(db: FintoDB, ids: string[]) {
   return db.transaction('rw', T(db), async () => {
     const people = new Set<string>();
@@ -184,7 +184,7 @@ export async function deleteRepayments(db: FintoDB, ids: string[]) {
   });
 }
 
-/** Hoàn tác xóa lần trả nợ: khôi phục, miễn khoản nợ không bị trả vượt (đã trả cách khác trong lúc chờ). */
+/** Undo deleting repayments: restore them unless the debt would be over-repaid (repaid another way meanwhile). */
 export async function restoreRepayments(db: FintoDB, ids: string[]) {
   return db.transaction('rw', T(db), async () => {
     const people = new Set<string>();
@@ -199,8 +199,8 @@ export async function restoreRepayments(db: FintoDB, ids: string[]) {
 }
 
 /**
- * UC-19: tôi xóa nợ cho người đó — trừ dần các khoản Đòi lại, cũ nhất trước; phần này thành Cho đi.
- * (Khoản đầu kỳ: vẫn là Cho đi nhưng không vào chi tiêu của kỳ — xem stats.)
+ * UC-19: I forgive that person — reduce their Owed items, oldest first; this part becomes Given.
+ * (Opening items: still Given, but not in the period's spending — see stats.)
  */
 export async function forgiveAll(db: FintoDB, personId: string, amount: number, date: string) {
   if (!(amount > 0)) throw new Error('Số tiền phải lớn hơn 0');
@@ -221,7 +221,7 @@ export async function forgiveAll(db: FintoDB, personId: string, amount: number, 
   });
 }
 
-/** UC-17 (thủ công): hai bên nợ nhau → cấn trừ số nhỏ hơn. Mặc định cấn hết; trả về id để hoàn tác. */
+/** UC-17 (manual): both sides owe each other → offset the smaller amount. Offsets everything by default; returns ids for undo. */
 export async function offsetDebts(db: FintoDB, personId: string, date: string, amount?: number) {
   assertDate(date);
   return db.transaction('rw', T(db), async () => {
@@ -248,7 +248,7 @@ export async function offsetDebts(db: FintoDB, personId: string, date: string, a
   });
 }
 
-/** Xóa (hoàn tác) các dòng cấn trừ / bỏ qua vừa ghi. */
+/** Delete (undo) offset / forgive rows that were just written. */
 export async function deleteAllocations(db: FintoDB, ids: string[]) {
   return db.transaction('rw', T(db), async () => {
     for (const id of ids) {

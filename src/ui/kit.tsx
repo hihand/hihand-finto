@@ -26,6 +26,9 @@ const PATHS: Record<string, string> = {
   wallet: 'M3 7h18v13H3zM3 7l3-4h12l3 4M16 14h2',
   income: 'M12 19V5M5 12l7 7 7-7',
   outgo: 'M12 5v14M5 12l7-7 7 7',
+  // iOS Share button: an arrow coming out of a box.
+  share: 'M12 3v12M8 7l4-4 4 4M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1',
+  download: 'M12 3v12M7 10l5 5 5-5M5 21h14',
   receipt: 'M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6',
   eye: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
   eyeOff: 'M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2',
@@ -53,7 +56,7 @@ export function Pill({ kind, children }: { kind: ShareType | 'in' | 'paid' | 'pa
   return <span className={`pill pill-${kind}`}>{children}</span>;
 }
 
-/** Thanh 3 màu: bản thân / cho đi / ứng trước. */
+/** 3-color bar: myself / given / advanced. */
 export function SplitBar({ mine, give, owe }: { mine: number; give: number; owe: number }) {
   const total = mine + give + owe || 1;
   return (
@@ -85,24 +88,13 @@ export function Switch({ checked, onChange, label }: { checked: boolean; onChang
   );
 }
 
-/** Logo tạm (chưa có logo chính thức): ví có thẻ và khóa cài. */
+/** Brand mark: the low-poly deer (see brand/ and the Hihand Finto Brand guide). */
 export function BrandMark({ size = 36 }: { size?: number }) {
-  return (
-    <span className="brand-mark" style={{ width: size, height: size }} aria-hidden="true">
-      <svg width={size * 0.62} height={size * 0.62} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <g transform="rotate(-14 12 7)">
-          <path d="M5.5 8V4.6A1.3 1.3 0 0 1 6.8 3.3h9.4a1.3 1.3 0 0 1 1.3 1.3V8" />
-          <path d="M5.5 5.6h12" />
-        </g>
-        <rect x="2.5" y="7.5" width="19" height="13" rx="3.2" />
-        <path d="M21.5 11.5H17a2 2 0 0 0 0 4h4.5" />
-        <circle cx="17.2" cy="13.5" r="0.9" fill="currentColor" stroke="none" />
-      </svg>
-    </span>
-  );
+  // The Hihand Finto deer mark on its midnight tile (same artwork as the app icon).
+  return <img className="brand-mark" src="/brand-mark.png" width={size} height={size} alt="" aria-hidden="true" />;
 }
 
-/** Nút con mắt: ẩn / hiện thu nhập, số dư, còn lại. */
+/** Eye button: hide / show income, balances, left over. */
 export function PrivacyToggle() {
   const { hidden, toggle } = usePrivacy();
   return (
@@ -138,7 +130,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   );
 }
 
-/* ---------- Thông báo + hoàn tác ---------- */
+/* ---------- Toasts + undo ---------- */
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [msg, setMsg] = useState<(Toast & { id: number }) | null>(null);
@@ -162,5 +154,19 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         )}
       </div>
     </ToastCtx.Provider>
+  );
+}
+
+/**
+ * Phone number keypads have no "k" / "tr": quick buttons under the amount field.
+ * Pressing them keeps focus on the field (keyboard stays, no reformatting halfway). Only shown on touch screens.
+ */
+export function AmountKeys({ onAdd }: { onAdd: (suffix: string) => void }) {
+  return (
+    <div className="amount-keys" role="group" aria-label="Gõ nhanh số tiền">
+      {['000', 'k', 'tr'].map((k) => (
+        <button type="button" key={k} className="chip sm" onPointerDown={(e) => e.preventDefault()} onClick={() => onAdd(k)}>{k}</button>
+      ))}
+    </div>
   );
 }

@@ -1,11 +1,11 @@
 import { strToU8, zipSync } from 'fflate';
 
-/** Một ô: chuỗi, số (đồng), hoặc ngày YYYY-MM-DD (ghi thành ngày thật của Excel). */
+/** A cell: string, number (VND), or a YYYY-MM-DD date (written as a real Excel date). */
 export type Cell = string | number | { date: string } | null | undefined;
 export interface Sheet { name: string; header: string[]; rows: Cell[][]; widths?: number[] }
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-  // Bỏ ký tự điều khiển XML không cho phép.
+  // Strip XML control characters that are not allowed.
   // eslint-disable-next-line no-control-regex
   .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
 
@@ -15,10 +15,10 @@ const col = (i: number) => {
   return s;
 };
 
-/** Số ngày Excel (hệ 1900) của một ngày YYYY-MM-DD. */
+/** Excel serial date (1900 system) of a YYYY-MM-DD date. */
 export const excelDate = (iso: string) => Math.round((Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) - Date.UTC(1899, 11, 30)) / 86_400_000);
 
-// Kiểu ô: 0 mặc định, 1 tiêu đề đậm, 2 số #,##0, 3 ngày dd/mm/yyyy
+// Cell styles: 0 default, 1 bold header, 2 number #,##0, 3 date dd/mm/yyyy
 const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <numFmts count="1"><numFmt numFmtId="164" formatCode="dd/mm/yyyy"/></numFmts>
@@ -56,7 +56,7 @@ ${cols}<sheetData>${rows.join('')}</sheetData>${sh.rows.length ? `<autoFilter re
 </worksheet>`;
 }
 
-/** Tạo file .xlsx tối giản (không cần thư viện bảng tính). */
+/** Build a minimal .xlsx file (no spreadsheet library needed). */
 export function buildXlsx(sheets: Sheet[]): Uint8Array {
   const names = sheets.map((s) => esc(s.name.replace(/[[\]:*?/\\]/g, ' ').slice(0, 31)));
   const files: Record<string, Uint8Array> = {

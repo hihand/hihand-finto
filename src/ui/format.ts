@@ -19,33 +19,33 @@ export function txTitle(ix: Index, tx: Transaction) {
   return tx.title || tx.productName || categoryPath(ix, tx.categoryId);
 }
 
-/** BR-18: "An chuyển dư 60k (tháng 11)" — ghi chú tiền dư cuối tháng mới nhất. */
+/** BR-18: "An chuyển dư 60k (tháng 11)" — the latest month-end surplus note. */
 export function noteText(ix: Index, personId: string) {
   const n = ix.lastNote.get(personId);
   if (!n) return '';
   return `${ix.person.get(personId)?.name ?? ''} chuyển dư ${short(n.creditAmount)} (tháng ${Number(n.month.slice(5, 7))}/${n.month.slice(0, 4)})`;
 }
 
-/* ---------- Ẩn số nhạy cảm ---------- */
+/* ---------- Hiding sensitive amounts ---------- */
 
 export const MASK = '•••••';
 export const PrivacyCtx = createContext<{ hidden: boolean; toggle: () => void }>({ hidden: false, toggle: () => {} });
 export const usePrivacy = () => useContext(PrivacyCtx);
-/** Che một chuỗi số tiền khi đang bật chế độ ẩn (thu nhập, số dư, còn lại). */
+/** Mask an amount string while privacy mode is on (income, balances, left over). */
 export function useMask() {
   const { hidden } = usePrivacy();
   return useCallback((s: string) => (hidden ? MASK : s), [hidden]);
 }
 
-/* ---------- Thông báo + hoàn tác ---------- */
+/* ---------- Toasts + undo ---------- */
 
 export interface Toast { text: string; action?: { label: string; run: () => void }; error?: boolean }
 export const ToastCtx = createContext<(t: Toast, ms?: number) => void>(() => {});
 export const useToast = () => useContext(ToastCtx);
 
 /**
- * Chạy một thao tác ghi; lỗi hiện thành thông báo và trả về undefined.
- * Thao tác thành công không trả gì thì trả về true, để người gọi phân biệt được thành công / thất bại.
+ * Run a write; errors become a toast and the result is undefined.
+ * A successful write that returns nothing returns true, so callers can tell success from failure.
  */
 export function useRun() {
   const toast = useToast();

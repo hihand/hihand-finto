@@ -37,8 +37,8 @@ beforeEach(async () => {
   }
 });
 
-describe('BR-17 thống kê năm', () => {
-  it('12 tháng, trung bình theo số tháng đã qua', async () => {
+describe('BR-17 yearly stats', () => {
+  it('12 months, average over the months elapsed', async () => {
     await lau('2026-01-10', 300000);
     await lau('2026-03-05', 600000);
     const y = yearStats(makeIndex(await snap()), 2026, '2026-04');
@@ -51,8 +51,8 @@ describe('BR-17 thống kê năm', () => {
   });
 });
 
-describe('BR-18 nhóm & ghi chú cuối tháng', () => {
-  it('tạo, sửa thành viên, xóa nhóm', async () => {
+describe('BR-18 groups & month-end notes', () => {
+  it('create, edit members, delete a group', async () => {
     const id = await saveGroup(db, { name: 'Hội bạn thân', memberIds: [P.an, P.binh] });
     await saveGroup(db, { id, name: 'Hội bạn', memberIds: [P.an] });
     let ix = makeIndex(await snap());
@@ -65,21 +65,21 @@ describe('BR-18 nhóm & ghi chú cuối tháng', () => {
     expect(ix.groups).toHaveLength(0);
   });
 
-  it('lần đầu chỉ đánh dấu kỳ; sang kỳ mới ghi "An chuyển dư 60k"', async () => {
+  it('first run only marks the period; a new period writes "An chuyển dư 60k"', async () => {
     expect(await runMonthEnd(db, '2026-11-08')).toBe(0);
     await lau('2026-11-06');
     await receivePayment(db, { personId: P.an, date: '2026-11-07', amount: 180000, picks: [] });
-    // lẩu đã tạo trước khi An gửi → An nợ 120k, đang giữ 180k; trừ 120k → còn giữ 60k
+    // hotpot created before An deposited → An owes 120k, holding 180k; apply 120k → 60k held
     const sh = (await db.shares.where('personId').equals(P.an).first())!;
     await receivePayment(db, { personId: P.an, date: '2026-11-08', amount: 1, picks: [{ shareId: sh.id, amount: 120000 }] });
-    expect(await runMonthEnd(db, '2026-11-20')).toBe(0); // cùng kỳ
+    expect(await runMonthEnd(db, '2026-11-20')).toBe(0); // same period
     expect(await runMonthEnd(db, '2026-12-01')).toBe(1);
-    expect(await runMonthEnd(db, '2026-12-02')).toBe(0); // không ghi trùng
+    expect(await runMonthEnd(db, '2026-12-02')).toBe(0); // no duplicate
     const ix = makeIndex(await snap());
     expect(ix.lastNote.get(P.an)).toMatchObject({ month: '2026-11', creditAmount: 60001 });
   });
 
-  it('tắt ghi chú cuối tháng thì không ghi', async () => {
+  it('month-end notes off → nothing written', async () => {
     await runMonthEnd(db, '2026-11-08');
     await db.settings.update('settings', { monthEndNote: false });
     await receivePayment(db, { personId: P.an, date: '2026-11-07', amount: 50000, picks: [] });
@@ -87,8 +87,8 @@ describe('BR-18 nhóm & ghi chú cuối tháng', () => {
   });
 });
 
-describe('NFR-04 nhắc sao lưu', () => {
-  it('quá 7 ngày mới nhắc', () => {
+describe('NFR-04 backup reminder', () => {
+  it('reminds only after 7 days', () => {
     const now = new Date('2026-11-20T00:00:00Z');
     expect(backupOverdueDays(undefined, undefined, now)).toBe(0);
     expect(backupOverdueDays('2026-11-15T00:00:00Z', '2026-01-01T00:00:00Z', now)).toBe(0);
@@ -97,8 +97,8 @@ describe('NFR-04 nhắc sao lưu', () => {
   });
 });
 
-describe('BR-19 xuất Excel', () => {
-  it('mỗi dòng một phần chia, lọc theo kỳ, file xlsx hợp lệ', async () => {
+describe('BR-19 Excel export', () => {
+  it('one row per share, filtered by period, valid xlsx file', async () => {
     await lau('2026-10-30');
     await lau('2026-11-06');
     await receivePayment(db, { personId: P.an, date: '2026-11-07', amount: 200000, picks: [] });
