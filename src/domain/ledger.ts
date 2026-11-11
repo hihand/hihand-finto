@@ -330,10 +330,11 @@ export async function pickOldest(db: FintoDB, personId: string, amount: number) 
   return picks;
 }
 
-/** Gỡ khoản tự trừ (mới nhất trước) cho đến khi tiền đang giữ không âm — RULE-13. */
-async function fixNegativeCredit(db: FintoDB, personId: string) {
+/** Gỡ khoản tự trừ (mới nhất trước) cho đến khi tiền đang giữ không âm — RULE-13. Trả về số khoản đã gỡ. */
+export async function fixNegativeCredit(db: FintoDB, personId: string) {
   let credit = await creditOf(db, personId);
-  if (credit >= 0) return;
+  if (credit >= 0) return 0;
+  let n = 0;
   const autos = (await db.allocations.where('personId').equals(personId).toArray())
     .filter((a) => !a.deletedAt && a.settlementId === null && touchesHeld(a))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -341,11 +342,14 @@ async function fixNegativeCredit(db: FintoDB, personId: string) {
     if (credit >= 0) break;
     await db.allocations.update(a.id, { deletedAt: now(), updatedAt: now() });
     credit += a.amount;
+    n++;
   }
+  return n;
 }
 
-/** Gỡ cấn trừ (mới nhất trước) khi khoản tôi nợ đã bị trả bằng cách khác trong lúc chờ hoàn tác. */
-async function fixOverOffset(db: FintoDB, personId: string) {
+/** Gỡ cấn trừ (mới nhất trước) khi khoản tôi nợ đã bị trả bằng cách khác (chờ hoàn tác, hoặc gộp từ máy khác). Trả về số dòng đã gỡ. */
+export async function fixOverOffset(db: FintoDB, personId: string) {
+  let n = 0;
   for (const p of await openPayables(db, personId)) {
     let over = -p.remaining;
     if (over <= 0) continue;
@@ -356,8 +360,10 @@ async function fixOverOffset(db: FintoDB, personId: string) {
       if (over <= 0) break;
       await db.allocations.update(a.id, { deletedAt: now(), updatedAt: now() });
       over -= a.amount;
+      n++;
     }
   }
+  return n;
 }
 
 /** RULE-13: xóa một lần nhận (kèm phần cho luôn, phần bỏ qua của nó) hoặc một lần trả lại tiền giữ. */

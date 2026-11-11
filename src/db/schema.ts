@@ -173,7 +173,20 @@ export interface Settings {
   payForSeeded?: boolean;
   /** Ẩn số nhạy cảm (thu nhập, số dư, còn lại) mỗi lần mở app; không có = true. */
   hideOnOpen?: boolean;
+  /** Lần đổi gần nhất của các cài đặt được đồng bộ giữa các trình duyệt (SYNCED_SETTINGS). */
+  syncUpdatedAt?: string;
 }
+
+/** Cài đặt dùng chung giữa các trình duyệt; phần còn lại (giao diện, ẩn số, sao lưu, cờ tạo dữ liệu mặc định) là của riêng từng máy. */
+export const SYNCED_SETTINGS = ['monthStartDay', 'monthEndNote', 'autoApplyCredit', 'openingBalance', 'openingDate'] as const;
+
+/** Bảng được đồng bộ (theo thứ tự ghi: bảng được tham chiếu trước). */
+export const SYNC_TABLES = ['people', 'groups', 'groupMembers', 'categories', 'tags', 'categoryTags', 'transactions', 'transactionTags',
+  'shares', 'settlements', 'allocations', 'monthNotes', 'incomes', 'payables', 'repayments'] as const;
+export type SyncTable = (typeof SYNC_TABLES)[number];
+
+/** Dữ liệu riêng của trình duyệt này (không sao lưu, không đồng bộ): mã máy, các máy đã đồng bộ, đồng hồ. */
+export interface Meta { key: string; value: unknown }
 
 export class FintoDB extends Dexie {
   people!: EntityTable<Person, 'id'>;
@@ -192,6 +205,9 @@ export class FintoDB extends Dexie {
   payables!: EntityTable<Payable, 'id'>;
   repayments!: EntityTable<Repayment, 'id'>;
   settings!: EntityTable<Settings, 'id'>;
+  meta!: EntityTable<Meta, 'key'>;
+  /** Số thứ tự ghi trên máy này: mỗi bản ghi mang _seq của lần ghi cuối, để gói đồng bộ chỉ chứa phần thay đổi. */
+  seq = 0;
 
   constructor(name = 'hihand-finto') {
     super(name);
@@ -219,12 +235,69 @@ export class FintoDB extends Dexie {
       payables: 'id, personId, date, updatedAt',
       repayments: 'id, personId, payableId, incomeId, date, updatedAt',
     });
+    // v4: đồng bộ giữa các trình duyệt — chỉ mục _seq cho mọi bảng đồng bộ + bảng meta riêng của máy.
+    this.version(4).stores({
+      ...Object.fromEntries(SYNC_TABLES.map((t) => [t, `${STORES[t]}, _seq`])),
+      meta: 'key',
+    }).upgrade(async (tx) => {
+      let n = 0;
+      for (const t of SYNC_TABLES) await tx.table(t).toCollection().modify((r: { _seq?: number }) => { r._seq = ++n; });
+    });
+
+    for (const t of SYNC_TABLES) {
+      this.table(t).hook('creating', (_pk, obj: { _seq?: number }) => { obj._seq = ++this.seq; });
+      this.table(t).hook('updating', () => ({ _seq: ++this.seq }));
+    }
+    // Đổi cài đặt dùng chung → đánh dấu thời điểm để gộp (bản mới hơn thắng).
+    this.settings.hook('updating', (mods) => {
+      const m = mods as Record<string, unknown>;
+      if (SYNCED_SETTINGS.some((k) => k in m) && !('syncUpdatedAt' in m)) return { syncUpdatedAt: now() };
+    });
+    this.on('ready', async () => {
+      for (const t of SYNC_TABLES) {
+        const last = (await this.table(t).orderBy('_seq').last()) as { _seq?: number } | undefined;
+        this.seq = Math.max(this.seq, last?._seq ?? 0);
+      }
+      const clock = (await this.meta.get('clock'))?.value;
+      if (typeof clock === 'string') observeClock(clock);
+    });
   }
 }
 
+/** Chỉ mục của từng bảng (giữ nguyên như các bản trước, thêm _seq ở v4). */
+const STORES: Record<SyncTable, string> = {
+  people: 'id, name, updatedAt',
+  groups: 'id, updatedAt',
+  groupMembers: 'id, groupId, personId, updatedAt',
+  categories: 'id, parentId, sortOrder, updatedAt',
+  tags: 'id, name, updatedAt',
+  categoryTags: 'id, categoryId, tagId, updatedAt',
+  transactions: 'id, date, categoryId, kind, updatedAt',
+  transactionTags: 'id, transactionId, tagId, updatedAt',
+  shares: 'id, transactionId, personId, type, updatedAt',
+  settlements: 'id, personId, date, updatedAt',
+  allocations: 'id, settlementId, shareId, personId, updatedAt',
+  monthNotes: 'id, [personId+month], updatedAt',
+  incomes: 'id, date, categoryId, personId, updatedAt',
+  payables: 'id, personId, date, updatedAt',
+  repayments: 'id, personId, payableId, incomeId, date, updatedAt',
+};
+
 export const db = new FintoDB();
 
-export const now = () => new Date().toISOString();
+/**
+ * Đồng hồ không lùi: luôn lớn hơn mọi mốc thời gian đã thấy (kể cả từ máy khác khi đồng bộ),
+ * để lần sửa sau trên máy này luôn "mới hơn" dù đồng hồ hai máy lệch nhau.
+ */
+let lastMs = 0;
+export const observeClock = (iso: string) => {
+  const t = Date.parse(iso);
+  if (Number.isFinite(t) && t > lastMs) lastMs = t;
+};
+export const now = () => {
+  lastMs = Math.max(Date.now(), lastMs + 1);
+  return new Date(lastMs).toISOString();
+};
 export const uuid = () => crypto.randomUUID();
 export const base = (): Base => {
   const t = now();

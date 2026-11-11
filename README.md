@@ -32,6 +32,8 @@ npm run build    # PWA build in dist/
 | `src/domain/income.test.ts` | Tests for income, the "Left over" figure, balances, upgrading v1 data to v2 |
 | `src/domain/debt.ts` | Two-way debts (UC-14 → UC-19): opening balances per person, borrow, held money → debt, repay (hold / transfer, optionally from an income), waive, forgive all, offset |
 | `src/domain/debt.test.ts` | Tests for opening debts, offsetting on-behalf payments, repay from income, waive / forgive, in-app debts |
+| `src/domain/sync.ts` | Browser ↔ browser sync with JSON packages (no server): per-browser device id, per-peer "synced up to" state so packages only carry what the other browser lacks, last-write-wins merge per record, de-duplication of same-name categories / tags / people, money-rule repair after merge, optional AES-GCM password |
+| `src/domain/sync.test.ts` | Tests for 2–3 browsers syncing, conflicting edits, deletes, de-duplication, lost packages, encryption |
 | `src/domain/held.test.ts` | Tests for the two balances and UC-09 → UC-13 (gift the overpayment, forgive the shortfall, hold money, pay on behalf, return held money) |
 | `src/domain/review.test.ts` | Regression tests for issues found in the security / bug review |
 | `src/domain/perf.test.ts` | Performance test with 10,000 transactions (NFR-01) |
@@ -49,6 +51,7 @@ npm run build    # PWA build in dist/
 - **"Left over"** = income − what I actually spent (Mine + Given + forgiven). It excludes advances and on-behalf payments covered by held money. "Advanced" is only the part of Owed not yet covered by held money.
 - **Privacy mode:** every time the app opens, income, balances, "Left over" and income items show as •••••. Tap the eye button next to the app name to reveal them for that session. Auto-hide can be turned off in Settings › General. Spending is always visible.
 - **Two-way debts (schema v3): done.** Per-person opening balances (held / I owe / they owe), not counted as income or cash flow. Repay from an income or on its own (keep it as held money, or transfer). When paying on behalf of someone you owe, the form lets you deduct held money → offset your debt → leave the rest owed or gift it. "Waived" (they forgive you) and "Forgive" (you forgive them, counts as Given). Rule: **opening** debts are off the books (not deducted from My balance; repaying reduces "Left over"); **in-app** debts (borrow, spent held money) are on the books (deducted from My balance; repaying does not reduce "Left over" again). Debt card on Overview, debt row in Stats, debt book per person on People, "Công nợ" sheet in Excel.
+- **Sync between browsers (schema v4): done.** Settings › Đồng bộ: export a package (full for a new browser, or only the changes a known browser has not confirmed), send the file any way you like, import it on the other browser to merge (not overwrite). A table shows each synced browser: last received / sent and how many changes are still unsent. Shared settings (month start day, opening balance…) sync; theme / privacy / backup reminders stay per browser. Restoring a backup gives the browser a new device id so the next sync is a full one.
 - **Phase 4 (on hold):** mobile app (Capacitor) + web ↔ mobile sync via QR code.
 
 ## Security & privacy

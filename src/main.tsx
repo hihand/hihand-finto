@@ -13,12 +13,15 @@ import './index.css';
 import App from './App';
 import { db } from './db/schema';
 import { seedIfEmpty } from './db/seed';
+import { getDevice } from './domain/sync';
 import { runMonthEnd } from './domain/monthEnd';
 import { today } from './domain/period';
 
 // Xin trình duyệt giữ dữ liệu lâu dài (giảm rủi ro bị xóa), rồi tạo dữ liệu mặc định lần đầu.
 navigator.storage?.persist?.();
 await seedIfEmpty(db);
+// Mã riêng của trình duyệt này, dùng khi đồng bộ với trình duyệt khác.
+await getDevice(db);
 // Ghi chú tiền dư cuối tháng chạy khi mở app lần đầu trong kỳ mới (không có máy chủ chạy nền).
 await runMonthEnd(db, today()).catch(() => 0);
 

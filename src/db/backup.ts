@@ -57,6 +57,10 @@ export async function importBackup(text: string) {
   });
   // File sao lưu từ bản chưa có thu nhập: tạo danh mục thu mặc định.
   await seedIncomeCategories(db);
+  // Dữ liệu đã thay hết: đổi mã máy và quên các máy đã đồng bộ, để lần đồng bộ sau là gói đầy đủ ở cả hai phía.
+  await db.meta.delete('peers');
+  const dev = (await db.meta.get('device'))?.value as { name?: string } | undefined;
+  if (dev) await db.meta.put({ key: 'device', value: { id: crypto.randomUUID(), name: dev.name ?? 'Trình duyệt' } });
   await seedBills(db);
   await seedPayFor(db);
 }

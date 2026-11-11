@@ -18,15 +18,16 @@ import { parseAmount } from '../domain/split';
 import { balanceAt, debtSummary } from '../domain/stats';
 import { money, useMask } from '../ui/format';
 import { useSearchParams } from 'react-router-dom';
+import SyncSettings from '../ui/SyncSettings';
 
-type Tab = 'cats' | 'income' | 'people' | 'general';
+type Tab = 'cats' | 'income' | 'people' | 'general' | 'sync';
 
 export default function SettingsPage() {
   const ix = useIndex();
   const [params] = useSearchParams();
-  const [tab, setTab] = useState<Tab>(params.get('tab') === 'chung' ? 'general' : 'cats');
+  const [tab, setTab] = useState<Tab>(params.get('tab') === 'chung' ? 'general' : params.get('tab') === 'dong-bo' ? 'sync' : 'cats');
   if (!ix) return <p className="muted">Đang tải…</p>;
-  const TABS: [Tab, string][] = [['cats', 'Danh mục chi & tag'], ['income', 'Danh mục thu'], ['people', 'Mọi người'], ['general', 'Chung & dữ liệu']];
+  const TABS: [Tab, string][] = [['cats', 'Danh mục chi & tag'], ['income', 'Danh mục thu'], ['people', 'Mọi người'], ['general', 'Chung & dữ liệu'], ['sync', 'Đồng bộ']];
   return (
     <>
       <h1>Cài đặt</h1>
@@ -37,6 +38,7 @@ export default function SettingsPage() {
       {tab === 'income' && <Categories key="income" ix={ix} income />}
       {tab === 'people' && <PeopleSettings ix={ix} />}
       {tab === 'general' && <General ix={ix} />}
+      {tab === 'sync' && <SyncSettings />}
     </>
   );
 }
