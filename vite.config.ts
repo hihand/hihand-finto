@@ -35,7 +35,7 @@ export default defineConfig({
       // When a new version is available, ask ("Tải lại" button) instead of reloading while the user is typing.
       registerType: 'prompt',
       // Precache fonts and icons too so the app works offline (NFR-02).
-      workbox: { globPatterns: ['**/*.{js,css,html,svg,woff2,png}'], cleanupOutdatedCaches: true },
+      workbox: { globPatterns: ['**/*.{js,css,html,svg,woff2,png,ico}'], cleanupOutdatedCaches: true },
       manifest: {
         id: '/',
         name: 'Hihand Finto',
@@ -53,7 +53,6 @@ export default defineConfig({
           { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
           { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
           { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
-          { src: '/logo.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
         ],
       },
     }),
