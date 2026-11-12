@@ -16,6 +16,10 @@ import { seedIfEmpty } from './db/seed';
 import { getDevice } from './domain/sync';
 import { runMonthEnd } from './domain/monthEnd';
 import { today } from './domain/period';
+import { captureInvite } from './ui/invite';
+
+// A sync link (…/#sync=KEY) was opened: take the key out of the URL before anything else.
+captureInvite();
 
 // Ask the browser to keep data persistently (less risk of eviction), then create the default data on first run.
 navigator.storage?.persist?.();

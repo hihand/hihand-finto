@@ -92,16 +92,48 @@ export async function forgetPeer(db: FintoDB, peerId: string) {
   await savePeers(db, peers);
 }
 
+/** Live sync: the other browser confirmed it merged our changes up to `upto`. */
+export async function recordAck(db: FintoDB, peerId: string, upto: number) {
+  const peers = await getPeers(db);
+  const p = peers[peerId];
+  if (!p) return;
+  p.ackedByThem = Math.max(p.ackedByThem, upto);
+  p.echo = (p.echo ?? []).filter(([, b]) => b > p.ackedByThem);
+  await savePeers(db, peers);
+}
+
+/** Live sync: remember what was sent (buildPackage only does this for browsers it already knows). */
+export async function recordSent(db: FintoDB, peer: Device, count: number, full: boolean) {
+  const peers = await getPeers(db);
+  const p = peers[peer.id] ?? { id: peer.id, name: peer.name, theirSeq: 0, ackedByThem: 0 };
+  peers[peer.id] = { ...p, lastOut: { at: now(), count, full } };
+  await savePeers(db, peers);
+}
+
+/**
+ * _seq ranges (lo, hi] still to send: everything after `since`, minus the ranges written while importing that browser's
+ * own packages. Querying only these ranges keeps it fast after a large first sync (the echo covers most of the ledger).
+ */
+function sendRanges(since: number, echo: [number, number][] = []): [number, number][] {
+  const out: [number, number][] = [];
+  let lo = since;
+  for (const [a, b] of [...echo].sort((x, y) => x[0] - y[0])) {
+    if (b <= lo) continue;
+    if (a > lo) out.push([lo, a]);
+    lo = Math.max(lo, b);
+  }
+  out.push([lo, Infinity]);
+  return out;
+}
+const inRanges = (db: FintoDB, t: SyncTable, ranges: [number, number][]) =>
+  ranges.map(([lo, hi]) => db.table(t).where('_seq').between(lo, hi, false, true));
+
 /** Records changed on this browser that the other one does not have yet (not acknowledged, excluding what came from it). */
 export async function pendingFor(db: FintoDB, peerId: string | null) {
   const peer = peerId ? (await getPeers(db))[peerId] : undefined;
-  const since = peer?.ackedByThem ?? 0;
-  const echo = peer?.echo ?? [];
+  const ranges = sendRanges(peer?.ackedByThem ?? 0, peer?.echo);
   let n = 0;
-  for (const t of SYNC_TABLES) {
-    const rows = (since ? await db.table(t).where('_seq').above(since).toArray() : await db.table(t).toArray()) as { _seq?: number }[];
-    n += rows.filter((r) => !echo.some(([a, b]) => (r._seq ?? 0) > a && (r._seq ?? 0) <= b)).length;
-  }
+  for (const t of SYNC_TABLES) for (const q of inRanges(db, t, ranges)) n += await q.count();
   return n;
 }
 
@@ -118,13 +150,11 @@ export async function buildPackage(db: FintoDB, to: string | null): Promise<Sync
     const from = await getDevice(db);
     const peers = await getPeers(db);
     const since = to ? peers[to]?.ackedByThem ?? 0 : 0;
+    const ranges = sendRanges(since, (to && peers[to]?.echo) || []);
     const tables: SyncPackage['tables'] = {};
     let count = 0;
-    const echo = (to && peers[to]?.echo) || [];
-    const fromThem = (r: { _seq?: number }) => echo.some(([a, b]) => (r._seq ?? 0) > a && (r._seq ?? 0) <= b);
     for (const t of SYNC_TABLES) {
-      const all = since ? await db.table(t).where('_seq').above(since).toArray() : await db.table(t).toArray();
-      const rows = all.filter((r) => !fromThem(r));
+      const rows = (await Promise.all(inRanges(db, t, ranges).map((q) => q.toArray()))).flat();
       if (rows.length) tables[t] = rows.map(strip);
       count += rows.length;
     }
@@ -230,25 +260,32 @@ export async function importPackage(db: FintoDB, pkg: SyncPackage): Promise<Impo
       if (!rows?.length) continue;
       const table = db.table(t);
       const stat = { added: 0, updated: 0 };
-      for (const incoming of rows) {
-        const row = strip(incoming);
+      // Read the local copies in one go and write the winners in one go (a first full sync can be 100k+ records).
+      const incoming = rows.map(strip);
+      const locals = (await table.bulkGet(incoming.map((r) => r.id))) as (Row | undefined)[];
+      const added: Row[] = [];
+      const winners: Row[] = [];
+      incoming.forEach((row, i) => {
         observeClock(row.updatedAt);
-        const local = (await table.get(row.id)) as Row | undefined;
+        const local = locals[i];
         if (!local) {
-          await table.add(row);
           if (row.deletedAt) report.removed++;
           else stat.added++;
+          added.push(row);
         } else if (newer(row, strip(local)) > 0) {
-          await table.put(row);
           if (row.deletedAt && !local.deletedAt) report.removed++;
           else if (!row.deletedAt) stat.updated++;
         } else {
           report.skipped++;
-          continue;
+          return;
         }
+        if (local) winners.push(row);
         const pid = (row as { personId?: unknown }).personId;
         if (typeof pid === 'string') touched.add(pid);
-      }
+      });
+      // New records with add (no lookup of an existing row inside Dexie), changed ones with put.
+      if (added.length) await table.bulkAdd(added);
+      if (winners.length) await table.bulkPut(winners);
       if (stat.added || stat.updated) report.perTable[t] = stat;
       report.added += stat.added;
       report.updated += stat.updated;

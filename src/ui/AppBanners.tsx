@@ -60,7 +60,7 @@ export function InstallGuide({ onClose }: { onClose: () => void }) {
       </ol>
       <span className="small muted">
         Lưu ý: app trên màn hình chính có dữ liệu <b>riêng</b>, tách khỏi tab Safari. Nếu bạn đã nhập liệu trong tab Safari,
-        hãy vào Cài đặt › Chung &amp; dữ liệu › <b>Sao lưu</b> ở tab Safari rồi <b>Khôi phục</b> trong app đã cài.
+        hãy vào Cài đặt › Đồng bộ › <b>Hiện mã QR</b> ở tab Safari rồi <b>Quét mã QR</b> trong app đã cài (hoặc Sao lưu ở tab Safari rồi Khôi phục trong app).
       </span>
       <div className="row" style={{ justifyContent: 'flex-end' }}><button type="button" className="btn primary" onClick={onClose}>Đã hiểu</button></div>
     </Modal>

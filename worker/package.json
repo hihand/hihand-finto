@@ -1,0 +1,19 @@
+{
+  "name": "finto-sync",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "WebSocket relay for Hihand Finto QR sync: pairs two devices in a Durable Object room and forwards their end-to-end encrypted frames. Stores nothing.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "dev:test": "wrangler dev --port 8787 --ip 127.0.0.1 --env-file test/short-wait.env",
+    "test": "node test/relay.check.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261031.1",
+    "typescript": "~5.9.3",
+    "wrangler": "4.156.0"
+  }
+}

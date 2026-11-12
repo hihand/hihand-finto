@@ -11,8 +11,11 @@ const CSP = [
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
+  // Camera preview for scanning QR codes (MediaStream).
+  "media-src 'self' blob: mediastream:",
   "font-src 'self'",
-  "connect-src 'self'",
+  // Live sync: WebSocket to the relay (worker/). Must match SYNC_URL in src/lib/relaySocket.ts / VITE_SYNC_URL.
+  `connect-src 'self' ${process.env.VITE_SYNC_URL || 'wss://finto-sync.hihandlabs.online'}`,
   "worker-src 'self'",
   "manifest-src 'self'",
   "object-src 'none'",

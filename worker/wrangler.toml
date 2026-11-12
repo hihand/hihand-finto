@@ -1,0 +1,28 @@
+# Hihand Finto — QR sync relay (Cloudflare Worker + Durable Object).
+# Deploy: see README.md in this folder.
+name = "finto-sync"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# Custom domain: needs the hihandlabs.online zone (DNS) on Cloudflare in the same account.
+# Without it, delete this block and use https://finto-sync.<your-subdomain>.workers.dev instead
+# (then set VITE_SYNC_URL in the app, see README.md).
+routes = [{ pattern = "finto-sync.hihandlabs.online", custom_domain = true }]
+workers_dev = true
+
+# No request / message logging: the relay only sees encrypted frames anyway.
+observability = { enabled = false }
+
+[vars]
+# Pages allowed to open a room (comma-separated). localhost / 127.0.0.1 on any port are allowed for development.
+ALLOWED_ORIGINS = "https://finto.hihandlabs.online"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+# SQLite-backed Durable Objects are available on the Workers Free plan.
+# The room never writes data; storage is only used for its expiry alarm.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
